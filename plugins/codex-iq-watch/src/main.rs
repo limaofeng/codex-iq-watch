@@ -21,7 +21,7 @@ use serde_json::json;
 use crate::{
     config::WatchConfig,
     detector::{
-        AccountState, AccountStatus, AlertRecord, Delivery, apply_event, extract_event,
+        AccountState, AccountStatus, AlertRecord, CandyProbe, Delivery, apply_event, extract_event,
         render_alert, should_alert,
     },
     notify::{Notice, deliver_all},
@@ -274,6 +274,7 @@ async fn management_handle(
                     "last_alert_at_ms": state.last_alert_at_ms,
                     "window_events": state.events.len(),
                     "signaled_events": state.events.iter().filter(|event| !event.signals.is_empty()).count(),
+                    "last_probe": state.last_probe,
                 }));
                 for alert in &state.alerts {
                     alerts.push(json!({
@@ -314,6 +315,53 @@ async fn management_handle(
                 Ok(deleted) => json_response(200, json!({"ok": true, "deleted": deleted})),
                 Err(error) => json_response(500, json!({"ok": false, "error": error.message})),
             }
+        }
+        ("GET", "models") => {
+            // 汇总所有启用 Key 可见的模型；同一名称去重，取第一个可见 Key。
+            let Ok(keys) = store::list_client_keys(&call.host).await else {
+                return json_response(
+                    200,
+                    json!({"models": [], "error": "无法读取客户端 Key 列表（需要 models 权限）"}),
+                );
+            };
+            let mut models = Vec::<serde_json::Value>::new();
+            let mut seen = std::collections::BTreeSet::new();
+            for key in keys.iter().filter(|key| key.enabled) {
+                let Ok(names) = store::list_models(&call.host, &key.id).await else {
+                    continue;
+                };
+                for name in names {
+                    if seen.insert(name.clone()) {
+                        models.push(json!({"model": name, "key": key.id}));
+                    }
+                }
+            }
+            json_response(200, json!({"models": models}))
+        }
+        ("POST", "candy-test") => {
+            let incoming: serde_json::Value =
+                serde_json::from_slice(&call.payload).unwrap_or_else(|_| json!({}));
+            let account = incoming
+                .get("account")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            let model = incoming
+                .get("model")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            let key = incoming
+                .get("key")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned);
+            if account.is_empty() || model.is_empty() {
+                return json_response(
+                    400,
+                    json!({"ok": false, "error": "missing account or model"}),
+                );
+            }
+            json_response(200, run_candy_test(&call.host, &account, &model, key).await)
         }
         ("GET", "config") => json_response(200, effective_config(app, &call.host).await.redacted()),
         ("GET", "settings") => {
@@ -541,6 +589,181 @@ fn status_label(status: AccountStatus) -> &'static str {
     }
 }
 
+/// 糖果题：要求模型直接回答摸球/取球类保证性问题的最小数量，正确答案是 21。
+/// 侧重判断模型是否给出完整且正确的推理结果，属于经验性探针，不等价于官方降智结论。
+const CANDY_QUESTION: &str = "不使用任何外部工具回答以下问题：在一个黑色的袋子里放有三种口味的糖果，每种糖果有两种不同的形状（圆形和五角星形，不同的形状靠手感可以分辨）。数量如下：苹果味圆形7、桃子味圆形9、西瓜味圆形8；苹果味五角星7、桃子味五角星6、西瓜味五角星4。参赛者需在活动前决定摸出的糖果数目。问：最少取出多少个糖果，才能保证手中同时拥有不同形状的苹果味和桃子味的糖？\n直接回答最终结果";
+const CANDY_ANSWER: u64 = 21;
+
+/// 选择测试用 Key：优先指定，否则取第一个启用 Key。
+async fn pick_test_key(host: &HostClient, want: Option<String>) -> Option<String> {
+    if let Some(key) = want.filter(|key| !key.is_empty()) {
+        return Some(key);
+    }
+    store::list_client_keys(host)
+        .await
+        .ok()?
+        .into_iter()
+        .find(|key| key.enabled)
+        .map(|key| key.id)
+}
+
+/// 发送糖果题并判定答案；结果写回账号状态的 `last_probe`，供管理页标记。
+async fn run_candy_test(
+    host: &HostClient,
+    account_id: &str,
+    model: &str,
+    key: Option<String>,
+) -> serde_json::Value {
+    let Some(key_id) = pick_test_key(host, key).await else {
+        return json!({
+            "ok": false,
+            "result": "failed",
+            "detail": "没有可用的客户端 Key；先在宿主创建至少一个启用的 API Key",
+        });
+    };
+    let body = json!({
+        "model": model,
+        "input": CANDY_QUESTION,
+        "store": false,
+    });
+    let outcome = match store::execute_model(host, &key_id, model, account_id, &body).await {
+        Ok(events) => {
+            let text = collect_text(&events);
+            let digits = all_digits(&text);
+            if digits.is_empty() {
+                (
+                    "failed".to_owned(),
+                    "响应中没有可解析的数字".to_owned(),
+                    text,
+                )
+            } else if digits.contains(&CANDY_ANSWER) {
+                (
+                    "correct".to_owned(),
+                    format!("命中正确答案 {CANDY_ANSWER}"),
+                    text,
+                )
+            } else {
+                (
+                    "wrong".to_owned(),
+                    format!(
+                        "回答 {}，正确答案应为 {}",
+                        digits
+                            .iter()
+                            .map(u64::to_string)
+                            .collect::<Vec<_>>()
+                            .join("/"),
+                        CANDY_ANSWER
+                    ),
+                    text,
+                )
+            }
+        }
+        Err(error) => ("failed".to_owned(), error.message.clone(), String::new()),
+    };
+    let probe = CandyProbe {
+        at_ms: current_ms(),
+        model: model.to_owned(),
+        result: outcome.0.clone(),
+        detail: outcome.1.clone(),
+    };
+    // 测试记录允许覆盖写入：保存失败只影响展示，不影响判定结果返回。
+    for _ in 0..3 {
+        let Ok(existing) = store::load_account(host, account_id).await else {
+            break;
+        };
+        let (mut state, version) =
+            existing.unwrap_or_else(|| (AccountState::new(account_id, probe.at_ms), 0));
+        state.last_probe = Some(probe.clone());
+        let expected = (version != 0).then_some(version);
+        match store::save_account(host, &state, expected).await {
+            Ok(_) => break,
+            Err(error) if error.code == ErrorCode::Conflict => continue,
+            Err(_) => break,
+        }
+    }
+    let _ = store::touch_index(host, account_id, probe.at_ms).await;
+    json!({
+        "ok": outcome.0 != "failed",
+        "result": outcome.0,
+        "detail": outcome.1,
+        "answer": CANDY_ANSWER,
+        "model": model,
+        "key": key_id,
+        "excerpt": truncate_chars(&outcome.2, 600),
+        "recorded": true,
+    })
+}
+
+/// 从执行事件合并文本增量；同时取最大用量摘要供展示。
+fn collect_text(events: &[gateway_plugin_sdk::call::model::ExecutionEvent]) -> String {
+    use gateway_plugin_sdk::call::model::CanonicalEvent;
+    let mut text = String::new();
+    for event in events {
+        for fact in &event.facts {
+            match fact {
+                CanonicalEvent::TextDelta { text: delta, .. }
+                | CanonicalEvent::ReasoningDelta { text: delta, .. } => {
+                    // 推理过程不计入答案；只收集正式输出文本。
+                    if matches!(fact, CanonicalEvent::TextDelta { .. }) {
+                        text.push_str(delta);
+                    }
+                }
+                _ => {}
+            }
+        }
+        // wire 回退：没有 canonical 增量时，从 openai 协议事件里取 output_text。
+        if text.is_empty()
+            && let Some(wire) = &event.wire
+            && let gateway_plugin_sdk::call::model::WirePayload::Json { event, data, .. } =
+                &wire.payload
+        {
+            let kind = event.as_deref().unwrap_or_default();
+            if kind == "response.output_text.delta"
+                && let Some(delta) = data.get("delta").and_then(serde_json::Value::as_str)
+            {
+                text.push_str(delta);
+            }
+            if kind == "response.completed"
+                && let Some(output_text) = data
+                    .pointer("/response/output/0/content/0/text")
+                    .and_then(serde_json::Value::as_str)
+            {
+                text.push_str(output_text);
+            }
+        }
+    }
+    text
+}
+
+/// 提取文本中的数字序列：答案可能是 "21"、"21个"、"最少21"。
+fn all_digits(text: &str) -> Vec<u64> {
+    let mut values = Vec::new();
+    let mut current = String::new();
+    for ch in text.chars() {
+        if ch.is_ascii_digit() {
+            current.push(ch);
+        } else if !current.is_empty() {
+            if let Ok(value) = current.parse::<u64>() {
+                values.push(value);
+            }
+            current.clear();
+        }
+    }
+    if !current.is_empty()
+        && let Ok(value) = current.parse::<u64>()
+    {
+        values.push(value);
+    }
+    values
+}
+
+fn truncate_chars(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_owned();
+    }
+    text.chars().take(max).collect::<String>() + "…"
+}
+
 fn management_registration() -> ManagementRegistration {
     ManagementRegistration {
         routes: vec![
@@ -593,6 +816,18 @@ fn management_registration() -> ManagementRegistration {
                 response_content_types: vec!["application/json".to_owned()],
             },
             ManagementRoute {
+                method: "GET".to_owned(),
+                path: "models".to_owned(),
+                request_content_types: vec![],
+                response_content_types: vec!["application/json".to_owned()],
+            },
+            ManagementRoute {
+                method: "POST".to_owned(),
+                path: "candy-test".to_owned(),
+                request_content_types: vec!["application/json".to_owned()],
+                response_content_types: vec!["application/json".to_owned()],
+            },
+            ManagementRoute {
                 method: "POST".to_owned(),
                 path: "test-notify".to_owned(),
                 request_content_types: vec!["application/json".to_owned()],
@@ -640,6 +875,7 @@ mod tests {
         assert!(manifest.permissions.contains(&Permission::Requests));
         assert!(manifest.permissions.contains(&Permission::PublicEndpoints));
         assert!(manifest.permissions.contains(&Permission::Accounts));
+        assert!(manifest.permissions.contains(&Permission::Models));
         // 清单中保留 request lifecycle、usage、management 三类贡献点。
         for capability in [
             Capability::RequestLifecycle,

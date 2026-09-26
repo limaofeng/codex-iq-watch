@@ -6,9 +6,12 @@ use gateway_plugin_sdk::client::HostClient;
 use gateway_plugin_sdk::{
     ErrorCode, PluginFault,
     call::host::{
-        AuthGetRequest, AuthListRequest, AuthListResult, AuthRuntimeAccount, StateDeleteRequest,
-        StateGetRequest, StateGetResult, StatePutRequest,
+        AuthGetRequest, AuthListRequest, AuthListResult, AuthRuntimeAccount, ClientKey,
+        KeyListRequest, KeyListResult, ModelEventBatch, ModelExecuteRequest, ModelListRequest,
+        ModelListResult, ModelOperation, StateDeleteRequest, StateGetRequest, StateGetResult,
+        StatePutRequest,
     },
+    call::model::ExecutionEvent,
 };
 
 use crate::detector::AccountState;
@@ -344,6 +347,80 @@ pub async fn load_index(host: &HostClient) -> Result<Vec<serde_json::Value>, Plu
         }
         None => Vec::new(),
     })
+}
+
+/// 分页列出客户端 Key；需要 `models` 权限。测试执行借用这些 Key 的身份。
+pub async fn list_client_keys(host: &HostClient) -> Result<Vec<ClientKey>, PluginFault> {
+    let mut keys = Vec::new();
+    let mut cursor = None;
+    for _ in 0..10 {
+        let request = KeyListRequest { cursor, limit: 100 };
+        let reply = host
+            .call(
+                "host.keys.list",
+                serde_json::to_value(request).unwrap_or_else(|_| serde_json::json!({})),
+                Vec::new(),
+            )
+            .await
+            .map_err(|error| error.into_plugin_fault())?;
+        let page: KeyListResult =
+            serde_json::from_value(reply.result).map_err(|_| StateError::Invalid.fault())?;
+        keys.extend(page.keys);
+        let Some(next) = page.next_cursor.filter(|value| !value.is_empty()) else {
+            break;
+        };
+        cursor = Some(next);
+    }
+    Ok(keys)
+}
+
+/// 查询某个 Key 可见的模型目录；`protocol` 与执行请求一致（openai）。
+pub async fn list_models(host: &HostClient, key_id: &str) -> Result<Vec<String>, PluginFault> {
+    let request = ModelListRequest {
+        client_key_id: key_id.to_owned(),
+        protocol: "openai".to_owned(),
+        client_version: String::new(),
+    };
+    let reply = host
+        .call(
+            "host.models.list",
+            serde_json::to_value(request).unwrap_or_else(|_| serde_json::json!({})),
+            Vec::new(),
+        )
+        .await
+        .map_err(|error| error.into_plugin_fault())?;
+    let result: ModelListResult =
+        serde_json::from_value(reply.result).map_err(|_| StateError::Invalid.fault())?;
+    Ok(result.models)
+}
+
+/// 执行一次嵌套模型调用并返回解码后的执行事件；正文为所选协议的原始 JSON。
+pub async fn execute_model(
+    host: &HostClient,
+    key_id: &str,
+    model: &str,
+    account_id: &str,
+    body: &serde_json::Value,
+) -> Result<Vec<ExecutionEvent>, PluginFault> {
+    let request = ModelExecuteRequest {
+        client_key_id: Some(key_id.to_owned()),
+        model: model.to_owned(),
+        protocol: "openai".to_owned(),
+        operation: ModelOperation::Generate,
+        provider: None,
+        account_id: Some(account_id.to_owned()),
+        previous_response_id: None,
+    };
+    let reply = host
+        .call(
+            "host.model.execute",
+            serde_json::to_value(request).unwrap_or_else(|_| serde_json::json!({})),
+            serde_json::to_vec(body).map_err(|_| StateError::Invalid.fault())?,
+        )
+        .await
+        .map_err(|error| error.into_plugin_fault())?;
+    let batch = ModelEventBatch::decode(&reply.payload).map_err(|_| StateError::Invalid.fault())?;
+    Ok(batch.events)
 }
 
 fn account_key(account_id: &str) -> String {

@@ -31,11 +31,12 @@
               <th>窗口内信号</th>
               <th>最近观察</th>
               <th>最近告警</th>
+              <th>最近测试</th>
               <th>操作</th>
             </tr>
           </thead>
           <tbody id="accounts-body">
-            <tr><td colspan="8" class="empty">暂无数据</td></tr>
+            <tr><td colspan="9" class="empty">暂无数据</td></tr>
           </tbody>
         </table>
       </div>
@@ -104,10 +105,15 @@
           </div>
           <button class="btn link modal-close" id="settings-close" type="button" aria-label="关闭">✕</button>
         </header>
+        <div class="settings-tabs" role="tablist">
+          <button class="active" data-tab="webhook" type="button" role="tab">Webhook 机器人</button>
+          <button data-tab="email" type="button" role="tab">邮件 HTTP API</button>
+          <button data-tab="text" type="button" role="tab">通知文案</button>
+        </div>
         <div class="modal-body">
           <form id="notify-form" class="form">
-            <div class="form-section">
-              <h3 class="block-title">Webhook 机器人</h3>
+            <div class="form-section" data-panel="webhook">
+              <p class="card-sub">机器人地址与格式；支持企业微信、钉钉、飞书、Slack、Bark。钉钉「自定义关键词」校验词可放进「通知文案」的附加提示语。</p>
               <div class="form-grid">
                 <label class="field">
                   <span>Webhook 地址</span>
@@ -133,8 +139,8 @@
                 </label>
               </div>
             </div>
-            <div class="form-section">
-              <h3 class="block-title">邮件 HTTP API</h3>
+            <div class="form-section" data-panel="email" hidden>
+              <p class="card-sub">走邮件服务的 HTTP API（Resend/Postmark/SendGrid 或自建网关，generic 用自定义 JSON 模板）；宿主网络不支持 SMTP。</p>
               <div class="form-grid">
                 <label class="field">
                   <span>API 地址</span>
@@ -174,10 +180,10 @@
                 </label>
               </div>
             </div>
-            <div class="form-section">
-              <h3 class="block-title">通知文案</h3>
+            <div class="form-section" data-panel="text" hidden>
+              <p class="card-sub">附加提示语会追加到告警正文末尾；钉钉机器人选「自定义关键词」安全设置时，把关键词写在这里（例如：降智）。</p>
               <label class="field wide">
-                <span>附加提示语（加入钉钉关键词等安全校验词）</span>
+                <span>附加提示语</span>
                 <input type="text" id="f-alert-message" placeholder="检测到该账号持续出现降智特征，建议切换账号或稍后再用。" autocomplete="off" />
               </label>
             </div>
@@ -193,6 +199,35 @@
           <span class="modal-foot-gap"></span>
           <button class="btn" id="reload-settings" type="button">重载</button>
           <button class="btn primary" id="save-settings" type="button">保存设置</button>
+        </footer>
+      </div>
+    </div>
+
+    <div class="modal" id="test-modal" hidden>
+      <div class="modal-mask" data-close></div>
+      <div class="modal-panel modal-narrow" role="dialog" aria-modal="true" aria-labelledby="test-title">
+        <header class="modal-head">
+          <div>
+            <h2 class="card-title" id="test-title">糖果题测试</h2>
+            <p class="card-sub" id="test-account-name"></p>
+          </div>
+          <button class="btn link modal-close" id="test-close" type="button" aria-label="关闭">✕</button>
+        </header>
+        <div class="modal-body">
+          <p class="card-sub question">向该账号发送一道推理题（摸糖果保证数量，正确答案 21），用宿主嵌套模型调用、不占外部额度；模型答错或无输出可视为疑似降智的经验信号。</p>
+          <div class="form-grid">
+            <label class="field">
+              <span>模型</span>
+              <select id="test-model" disabled><option>加载中…</option></select>
+            </label>
+          </div>
+          <p class="form-hint" id="test-models-hint"></p>
+          <div class="probe-result" id="test-result"><span class="muted">尚未发送</span></div>
+        </div>
+        <footer class="modal-foot">
+          <span class="modal-foot-gap"></span>
+          <button class="btn" type="button" data-close>关闭</button>
+          <button class="btn primary" id="test-send" type="button">发送测试</button>
         </footer>
       </div>
     </div>

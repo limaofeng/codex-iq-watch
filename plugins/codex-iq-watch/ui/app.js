@@ -24,6 +24,14 @@
   var resetBtn = document.getElementById('reset-settings');
   var reloadSettingsBtn = document.getElementById('reload-settings');
   var settingsHint = document.getElementById('settings-hint');
+  var testModal = document.getElementById('test-modal');
+  var testCloseBtn = document.getElementById('test-close');
+  var testAccountName = document.getElementById('test-account-name');
+  var testModel = document.getElementById('test-model');
+  var testModelsHint = document.getElementById('test-models-hint');
+  var testSend = document.getElementById('test-send');
+  var testResult = document.getElementById('test-result');
+  var testAccount = '';
 
   var STATUS_LABELS = {
     unknown: '未知',
@@ -106,7 +114,7 @@
 
   function renderAccounts(accounts) {
     if (!accounts.length) {
-      accountsBody.innerHTML = '<tr><td colspan="8" class="empty">暂无账号观察数据</td></tr>';
+      accountsBody.innerHTML = '<tr><td colspan="9" class="empty">暂无账号观察数据</td></tr>';
       return;
     }
     accountsBody.innerHTML = accounts.map(function (account) {
@@ -122,7 +130,9 @@
         + '<td>' + (account.signaled_events || 0) + ' / ' + (account.window_events || 0) + '</td>'
         + '<td>' + esc(formatMs(account.last_observed_at_ms)) + '</td>'
         + '<td>' + esc(account.last_alert_at_ms ? formatMs(account.last_alert_at_ms) : '—') + '</td>'
+        + '<td>' + renderProbeCell(account.last_probe) + '</td>'
         + '<td>'
+        + '<button class="btn link" data-test="' + esc(account.account_id) + '" data-name="' + esc(account.name || account.account_id) + '" type="button">测试</button>'
         + '<button class="btn link" data-account="' + esc(account.account_id) + '" data-name="' + esc(account.name || account.account_id) + '" type="button">详情</button>'
         + '<button class="btn link danger" data-clear="' + esc(account.account_id) + '" type="button">清除</button>'
         + '</td>'
@@ -131,6 +141,11 @@
     accountsBody.querySelectorAll('button[data-account]').forEach(function (button) {
       button.addEventListener('click', function () {
         loadDetail(button.getAttribute('data-account'), button.getAttribute('data-name'));
+      });
+    });
+    accountsBody.querySelectorAll('button[data-test]').forEach(function (button) {
+      button.addEventListener('click', function () {
+        openTest(button.getAttribute('data-test'), button.getAttribute('data-name'));
       });
     });
     accountsBody.querySelectorAll('button[data-clear]').forEach(function (button) {
@@ -292,6 +307,92 @@
 
   function read(id) { return field(id).value.trim(); }
 
+  function renderProbeCell(probe) {
+    if (!probe || !probe.at_ms) {
+      return '<span class="muted">—</span>';
+    }
+    var cls = probe.result === 'correct' ? 'ok' : 'fail';
+    var text = probe.result === 'correct' ? '答对' : (probe.result === 'wrong' ? '答错' : '失败');
+    return '<span class="' + cls + '" title="' + esc(probe.detail || '') + '">'
+      + esc(text) + '</span> <span class="muted small">' + esc(formatMs(probe.at_ms)) + '</span>'
+      + '<div class="muted small">' + esc(probe.model || '') + '</div>';
+  }
+
+  function openTest(accountId, label) {
+    if (!accountId) return;
+    testAccount = accountId;
+    testAccountName.textContent = (label && label !== accountId)
+      ? (label + '（' + accountId + '）')
+      : accountId;
+    testResult.innerHTML = '<span class="muted">尚未发送</span>';
+    testModal.hidden = false;
+    loadModels();
+  }
+
+  function closeTest() {
+    testModal.hidden = true;
+  }
+
+  function loadModels() {
+    testModelsHint.textContent = '正在加载模型…';
+    testModel.disabled = true;
+    request({ method: 'GET', path: 'models' }).then(function (data) {
+      var models = data.models || [];
+      if (!models.length) {
+        testModelsHint.textContent = data.error || '没有可用模型；请先在宿主配置客户端 Key 与账号';
+        return;
+      }
+      testModel.innerHTML = models.map(function (item) {
+        return '<option value="' + esc(item.model) + '" data-key="' + esc(item.key) + '">'
+          + esc(item.model) + '</option>';
+      }).join('');
+      testModel.disabled = false;
+      testModelsHint.textContent = '共 ' + models.length + ' 个模型；测试借用第一个可见 Key 的身份发送';
+    }).catch(function (error) {
+      testModelsHint.textContent = '模型加载失败：' + error.message;
+    });
+  }
+
+  function runTest() {
+    var option = testModel.selectedOptions && testModel.selectedOptions[0];
+    var model = testModel.value;
+    if (!model) {
+      testResult.innerHTML = '<span class="fail">请先选择模型</span>';
+      return;
+    }
+    var key = option ? option.getAttribute('data-key') : '';
+    testSend.disabled = true;
+    testResult.innerHTML = '<span class="muted">发送中：经 ' + esc(model) + ' 提问糖果题（正确答案 21），最长可能需要数十秒…</span>';
+    request({
+      method: 'POST',
+      path: 'candy-test',
+      contentType: 'application/json',
+      body: JSON.stringify({ account: testAccount, model: model, key: key }),
+    }).then(function (data) {
+      var cls = data.result === 'correct' ? 'ok' : 'fail';
+      var label = data.result === 'correct' ? '答对 ✓' : (data.result === 'wrong' ? '答错 ✗' : '调用失败');
+      var html = '<span class="' + cls + '">' + esc(label) + '</span> ' + esc(data.detail || '');
+      if (data.excerpt) {
+        html += '<div class="probe-excerpt mono">' + esc(data.excerpt) + '</div>';
+      }
+      testResult.innerHTML = html;
+      loadStatus();
+    }).catch(function (error) {
+      testResult.innerHTML = '<span class="fail">测试失败：' + esc(error.message) + '</span>';
+    }).finally(function () {
+      testSend.disabled = false;
+    });
+  }
+
+  function setTab(name) {
+    document.querySelectorAll('.settings-tabs button').forEach(function (button) {
+      button.classList.toggle('active', button.getAttribute('data-tab') === name);
+    });
+    document.querySelectorAll('[data-panel]').forEach(function (panel) {
+      panel.hidden = panel.getAttribute('data-panel') !== name;
+    });
+  }
+
   function openSettings() {
     settingsModal.hidden = false;
     loadSettings();
@@ -389,10 +490,23 @@
     }
   });
   document.addEventListener('keydown', function (event) {
-    if (event.key === 'Escape' && !settingsModal.hidden) {
-      closeSettings();
+    if (event.key === 'Escape') {
+      if (!settingsModal.hidden) closeSettings();
+      if (!testModal.hidden) closeTest();
     }
   });
+  document.querySelectorAll('.settings-tabs button').forEach(function (button) {
+    button.addEventListener('click', function () {
+      setTab(button.getAttribute('data-tab'));
+    });
+  });
+  testCloseBtn.addEventListener('click', closeTest);
+  testModal.addEventListener('click', function (event) {
+    if (event.target && event.target.hasAttribute('data-close')) {
+      closeTest();
+    }
+  });
+  testSend.addEventListener('click', runTest);
   resetBtn.addEventListener('click', function () {
     if (!window.confirm('恢复默认将删除本页保存的全部通知设置（含认证头），改回宿主配置。继续吗？')) {
       return;

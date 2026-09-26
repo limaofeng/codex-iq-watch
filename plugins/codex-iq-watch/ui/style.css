@@ -279,3 +279,50 @@ body {
 .btn.link.danger:hover { color: var(--danger); filter: brightness(1.05); }
 .ok { color: var(--success); }
 .fail { color: var(--danger); }
+
+/* 设置弹窗分页与测试弹窗 */
+.settings-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 8px 16px 0;
+  border-bottom: 1px solid var(--border);
+}
+.settings-tabs button {
+  appearance: none;
+  border: none;
+  background: none;
+  color: var(--text-secondary);
+  font-size: 13px;
+  padding: 8px 14px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+.settings-tabs button:hover { color: var(--text); }
+.settings-tabs button.active {
+  color: var(--info);
+  border-bottom-color: var(--info);
+  font-weight: 600;
+}
+.modal-narrow { width: min(560px, calc(100vw - 32px)); }
+.form-section > .card-sub { margin-bottom: 10px; }
+.question { margin-bottom: 12px; }
+.probe-result {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-muted);
+  font-size: 13px;
+  min-height: 40px;
+}
+.probe-excerpt {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--text-secondary);
+  max-height: 160px;
+  overflow-y: auto;
+}

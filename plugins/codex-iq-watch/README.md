@@ -27,6 +27,10 @@
 
 告警通知与管理页显示的账号名来自 `host.auth.get_runtime`/`host.auth.list`（`accounts` 权限），不可用时回退为内部账号 ID；状态页表格每行支持「清除」重置该账号观察记录。
 
+## 糖果题测试
+
+管理页每行账号可发起「糖果题测试」：通过 `host.keys.list`/`host.models.list`/`host.model.execute`（`models` 权限）借用宿主客户端 Key 的身份、按账号发送一道推理题（正确答案 21）。结果（答对/答错/调用失败）写入账号 `last_probe` 并显示在「最近测试」列；这是主动探针，与信号窗口判定相互独立。
+
 ## 构建
 
 ```bash

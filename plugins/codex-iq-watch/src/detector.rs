@@ -74,6 +74,8 @@ pub struct AccountState {
     pub last_alert_at_ms: u64,
     #[serde(default)]
     pub alerts: Vec<AlertRecord>,
+    #[serde(default)]
+    pub last_probe: Option<CandyProbe>,
 }
 
 /// 一次已发送的降智告警。
@@ -83,6 +85,16 @@ pub struct AlertRecord {
     pub verdict: Verdict,
     /// 各通知渠道的投递结果。
     pub deliveries: Vec<Delivery>,
+}
+
+/// 最近一次糖果题探针结果；管理页测试直接驱动，不进入信号窗口。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CandyProbe {
+    pub at_ms: u64,
+    pub model: String,
+    /// `correct` 答对、`wrong` 答错、`failed` 调用或解析失败。
+    pub result: String,
+    pub detail: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -138,6 +150,7 @@ impl AccountState {
             status: AccountStatus::Unknown,
             last_alert_at_ms: 0,
             alerts: Vec::new(),
+            last_probe: None,
         }
     }
 
