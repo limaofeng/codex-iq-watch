@@ -3,7 +3,7 @@
   "name": "codex-iq-watch",
   "displayName": "Codex 降智监控",
   "publisher": "xunzhimeng",
-  "version": "0.1.9",
+  "version": "0.2.0",
   "description": "按账号观察上游过载、缓存命中骤降与首 token 变慢等降智信号，持续命中时通过 Webhook 或邮件 HTTP API 告警。",
   "license": "MIT",
   "author": "xunzhimeng",
@@ -15,6 +15,7 @@
   "contributes": {
     "request_lifecycle": {},
     "usage": {},
+    "scheduler": {},
     "management": {}
   },
   "permissions": [
@@ -104,6 +105,20 @@
         "type": "string",
         "default": "检测到该账号持续出现降智特征，建议切换账号或稍后再用。",
         "description": "附加在通知正文中的提示语"
+      },
+      "schedule_exclude_degraded": {
+        "type": "boolean",
+        "default": false,
+        "description": "账号调度时排除已判定降智的账号；需实例配置「账号调度」绑定才生效"
+      },
+      "schedule_all_degraded": {
+        "type": "string",
+        "enum": [
+          "delegate",
+          "reject"
+        ],
+        "default": "delegate",
+        "description": "候选账号全部降智时的处理：delegate 交回内置调度（不断流），reject 拒绝该请求"
       },
       "webhook_url": {
         "type": "string",

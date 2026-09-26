@@ -30,6 +30,10 @@ pub struct WatchConfig {
     pub email_body_template: String,
     /// 敏感字段；格式 `Header-Name: value`。
     pub email_auth_header: String,
+    /// 调度阶段排除已判定降智的账号；需实例配置「账号调度」绑定才生效。
+    pub schedule_exclude_degraded: bool,
+    /// 候选账号全部降智时的处理：delegate 交回内置调度（仍可能用降智账号）、reject 拒绝请求。
+    pub schedule_all_degraded: ScheduleFallback,
 }
 
 impl Default for WatchConfig {
@@ -56,6 +60,8 @@ impl Default for WatchConfig {
             email_subject_template: "[降智告警] {{account}} 信号 {{count}} 项".to_owned(),
             email_body_template: String::new(),
             email_auth_header: String::new(),
+            schedule_exclude_degraded: false,
+            schedule_all_degraded: ScheduleFallback::Delegate,
         }
     }
 }
@@ -80,6 +86,15 @@ pub enum EmailFormat {
     Resend,
     Postmark,
     Sendgrid,
+}
+
+/// 候选账号全部降智时的回落策略；默认交回内置调度保证不断流。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScheduleFallback {
+    #[default]
+    Delegate,
+    Reject,
 }
 
 impl WatchConfig {
@@ -180,6 +195,21 @@ impl WatchConfig {
         if let Some(value) = settings.get("consecutive_triggers").and_then(Value::as_u64) {
             self.consecutive_triggers = value as u32;
         }
+        // 调度避让参数同样允许页面覆盖。
+        if let Some(value) = settings
+            .get("schedule_exclude_degraded")
+            .and_then(Value::as_bool)
+        {
+            self.schedule_exclude_degraded = value;
+        }
+        if let Some(value) = settings
+            .get("schedule_all_degraded")
+            .and_then(Value::as_str)
+            && let Ok(fallback) =
+                serde_json::from_value::<ScheduleFallback>(Value::String(value.to_owned()))
+        {
+            self.schedule_all_degraded = fallback;
+        }
     }
 
     /// 把 `Header-Name: value` 形式的敏感配置解析为头对；格式不合法时不发送。
@@ -219,6 +249,8 @@ impl WatchConfig {
             "email_subject_template": self.email_subject_template,
             "email_body_template": self.email_body_template,
             "email_auth_header_configured": !self.email_auth_header.is_empty(),
+            "schedule_exclude_degraded": self.schedule_exclude_degraded,
+            "schedule_all_degraded": format!("{:?}", self.schedule_all_degraded).to_lowercase(),
         })
     }
 }

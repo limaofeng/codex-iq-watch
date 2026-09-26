@@ -227,6 +227,17 @@
                   <span>连续判定次数 ≥</span>
                   <input type="number" id="f-consecutive" min="1" max="10" step="1" autocomplete="off" />
                 </label>
+                <label class="check field-check">
+                  <input type="checkbox" id="f-pause-degraded" /> 调度时排除降智账号（需在实例配置中绑定「账号调度」能力）
+                </label>
+                <label class="field">
+                  <span>候选全部降智时</span>
+                  <select id="f-all-degraded">
+                    <option value="">（宿主配置）</option>
+                    <option value="delegate">继续调用（交回内置调度）</option>
+                    <option value="reject">拒绝请求</option>
+                  </select>
+                </label>
               </div>
             </div>
             <p class="form-hint" id="settings-hint"></p>

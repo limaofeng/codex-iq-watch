@@ -19,9 +19,23 @@
 
 `enabled=false` 时仍统计信号，不发送通知。
 
+## 调度避让（可选）
+
+插件声明了 `scheduler` 能力：开启后宿主每次为请求选账号时先回调插件，候选中被判定为「降智」（已触发告警）的账号会被排除，在剩余账号中按宿主内置同款次序（in_flight 最少、失败率最低、权重最大）挑一个。
+
+启用两步：
+
+1. 实例配置 → 能力绑定中勾选「调度 · 账号调度」（失败策略建议 `delegate`：插件异常/超时时回退内置调度，不影响流量）；可按 Key／账号组／Provider／模型限定范围。
+2. 管理页「通知设置 → 检测参数」勾选「调度时排除降智账号」（对应配置 `schedule_exclude_degraded`，默认关闭；未绑定调度时该开关无效果）。
+
+- 「疑似」账号不排除，只排除已告警的「降智」账号。
+- 候选账号全部降智时按 `schedule_all_degraded` 处理：`delegate`（默认）交回内置调度、仍会用到降智账号但不断流；`reject` 直接拒绝该请求。管理页同位置可改。
+- 被排除的账号不参与调度便不会产生新观察记录，状态不会自动恢复；状态页「清除」或测试正常后手动清除即可重新参与调度。
+
 ## 能力声明
 
 - `request_lifecycle` + `usage`：观察请求终态与用量（`policy.observe_request`）
+- `scheduler`：账号调度阶段排除降智账号（`policy.schedule_account`，需实例绑定启用）
 - `management`：状态页（账号状态＋聚合告警历史＋信号详情）与 `status`/`events`/`alerts`/`settings`/`test-notify`/`account-clear`/`models`/`candy-test` 管理路由
 - 权限：`requests`（观察事实）、`network`（通知出站）、`accounts`（账号显示名解析）、`models`（糖果题测试）、`public_endpoints`（页面图标）
 

@@ -3,6 +3,7 @@
 mod config;
 mod detector;
 mod notify;
+mod scheduler;
 mod store;
 mod time_util;
 
@@ -12,7 +13,7 @@ use gateway_plugin_sdk::{
     ErrorCode, PluginFault,
     call::{
         management::{ManagementPage, ManagementRegistration, ManagementResource, ManagementRoute},
-        policy::ObserveRequest,
+        policy::{AccountScheduleRequest, ObserveRequest},
     },
     client::{Empty, HostClient, PluginBuilder, SessionConfig, TypedCall, TypedReply, methods},
 };
@@ -61,6 +62,7 @@ async fn main() {
 
     let plugin = match PluginBuilder::from_json(include_bytes!("../plugin.json"))
         .and_then(|builder| builder.on(methods::OBSERVE_REQUEST, observe(app.clone())))
+        .and_then(|builder| builder.on(methods::SCHEDULE_ACCOUNT, schedule(app.clone())))
         .and_then(|builder| builder.management(management_registration(), management(app.clone())))
         .and_then(|builder| builder.build())
     {
@@ -73,6 +75,8 @@ async fn main() {
 /// `TypedCall` 到盒装异步回复的通用形态；用于消减处理器签名里的复杂类型。
 type BoxFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send>>;
 type ObserveResult = Result<TypedReply<Empty>, PluginFault>;
+type ScheduleResult =
+    Result<TypedReply<gateway_plugin_sdk::call::policy::AccountScheduleDecision>, PluginFault>;
 type ManagementCall = TypedCall<gateway_plugin_sdk::call::management::ManagementRequest>;
 type ManagementResult =
     Result<TypedReply<gateway_plugin_sdk::call::management::ManagementResponse>, PluginFault>;
@@ -81,6 +85,16 @@ fn observe(app: Arc<App>) -> impl Fn(TypedCall<ObserveRequest>) -> BoxFuture<Obs
     move |call: TypedCall<ObserveRequest>| {
         let app = Arc::clone(&app);
         Box::pin(async move { observe_request(&app, call).await })
+    }
+}
+
+/// 调度回调入口：绑定「账号调度」阶段后宿主每次选号都会先问插件。
+fn schedule(
+    app: Arc<App>,
+) -> impl Fn(TypedCall<AccountScheduleRequest>) -> BoxFuture<ScheduleResult> {
+    move |call: TypedCall<AccountScheduleRequest>| {
+        let app = Arc::clone(&app);
+        Box::pin(async move { scheduler::schedule_account(&app, call).await })
     }
 }
 
@@ -511,6 +525,8 @@ async fn management_handle(
                 "min_signaled_requests",
                 "min_signal_kinds",
                 "consecutive_triggers",
+                "schedule_exclude_degraded",
+                "schedule_all_degraded",
             ] {
                 match incoming.get(key) {
                     Some(serde_json::Value::Null) => {

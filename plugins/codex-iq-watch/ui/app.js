@@ -527,6 +527,8 @@
       ? effective.min_signal_kinds : '';
     field('f-consecutive').value = effective.consecutive_triggers != null
       ? effective.consecutive_triggers : '';
+    field('f-pause-degraded').checked = effective.schedule_exclude_degraded === true;
+    field('f-all-degraded').value = effective.schedule_all_degraded || '';
   }
 
   /* 数值字段：留空 → null（清除覆盖回宿主配置），有值 → 换算回毫秒/原始单位。 */
@@ -550,6 +552,8 @@
       min_signaled_requests: num('f-min-signaled', 1),
       min_signal_kinds: num('f-min-kinds', 1),
       consecutive_triggers: num('f-consecutive', 1),
+      schedule_exclude_degraded: field('f-pause-degraded').checked,
+      schedule_all_degraded: field('f-all-degraded').value || null,
     };
   }
 
