@@ -119,6 +119,12 @@ async fn observe_inner(
         let loaded = store::load_account(host, account_id).await?;
         let (mut state, version) =
             loaded.unwrap_or_else(|| (AccountState::new(account_id, now_ms), 0));
+        // 首次见到该账号时解析宿主显示名；失败仅回退为内部 ID，不重试。
+        if state.display_name.is_none()
+            && let Ok(account) = store::account_runtime(host, account_id).await
+        {
+            state.display_name = store::runtime_label(&account);
+        }
         let event = extract_event(&observation, config, state.cache_baseline_hit);
         let verdict = apply_event(&mut state, event, &observation, config);
         let alert = should_alert(&state, &verdict, config);
@@ -138,6 +144,8 @@ async fn observe_inner(
 }
 
 /// 发送告警并回写投递结果；通知失败会记录到投递明细与日志，不回滚判定。
+/// 先用 CAS 抢占冷却位再发送：并发观察下只有一个链路会真正发出告警，
+/// `last_alert_at_ms` 丢失曾导致同账号在冷却期内重复推送。
 async fn fire_alert(
     _app: &App,
     host: &HostClient,
@@ -149,7 +157,33 @@ async fn fire_alert(
     if !config.enabled {
         return;
     }
-    let (title, detail) = render_alert(state, verdict, config);
+    // 阶段一：抢占告警位。回写失败（含状态被清空）视为另一条链路已接手，直接放弃。
+    let mut claimed = state.clone();
+    for _ in 0..3 {
+        let Ok(Some((fresh, version))) = store::load_account(host, &state.account_id).await else {
+            return;
+        };
+        // 冷却位已被更新（其他链路已告警），跳过本次发送。
+        if fresh.last_alert_at_ms != state.last_alert_at_ms {
+            return;
+        }
+        let mut candidate = fresh.clone();
+        candidate.last_alert_at_ms = now_ms;
+        let expected = (version != 0).then_some(version);
+        match store::save_account(host, &candidate, expected).await {
+            Ok(_) => {
+                claimed = candidate;
+                break;
+            }
+            Err(error) if error.code == ErrorCode::Conflict => continue,
+            Err(_) => return,
+        }
+    }
+    if claimed.last_alert_at_ms != now_ms {
+        return;
+    }
+
+    let (title, detail) = render_alert(&claimed, verdict, config);
     let notice = Notice {
         title,
         detail,
@@ -158,25 +192,33 @@ async fn fire_alert(
         verdict: serde_json::to_value(verdict).unwrap_or_default(),
     };
     let deliveries = deliver_all(host, config, &notice).await;
-    // 没有任何渠道配置时也记录告警，管理页仍能看到事件。
-    let mut updated = state.clone();
-    updated.last_alert_at_ms = now_ms;
-    updated.status = AccountStatus::Degraded;
-    updated.alerts.push(AlertRecord {
-        at_ms: now_ms,
-        verdict: verdict.clone(),
-        deliveries: deliveries
-            .iter()
-            .map(|item| Delivery {
-                channel: item.channel.clone(),
-                ok: item.ok,
-                detail: item.detail.clone(),
-            })
-            .collect(),
-    });
-    updated.prune(now_ms, config.window_ms);
-    // 告警回写允许覆盖：同一观察链路上的告警只做一次，丢失不重复发送。
-    let _ = store::save_account(host, &updated, None).await;
+    // 阶段二：把告警与投递明细追加进历史；失败只丢记录，冷却位已生效，不重复发送。
+    for _ in 0..3 {
+        let Ok(Some((mut fresh, version))) = store::load_account(host, &state.account_id).await
+        else {
+            break;
+        };
+        fresh.status = AccountStatus::Degraded;
+        fresh.alerts.push(AlertRecord {
+            at_ms: now_ms,
+            verdict: verdict.clone(),
+            deliveries: deliveries
+                .iter()
+                .map(|item| Delivery {
+                    channel: item.channel.clone(),
+                    ok: item.ok,
+                    detail: item.detail.clone(),
+                })
+                .collect(),
+        });
+        fresh.prune(now_ms, config.window_ms);
+        let expected = (version != 0).then_some(version);
+        match store::save_account(host, &fresh, expected).await {
+            Ok(_) => break,
+            Err(error) if error.code == ErrorCode::Conflict => continue,
+            Err(_) => break,
+        }
+    }
     for outcome in &deliveries {
         if !outcome.ok {
             log(
@@ -203,33 +245,75 @@ async fn management_handle(
     let request = call.request;
     match (request.method.as_str(), request.path.as_str()) {
         ("GET", "status") => {
+            // 管理阶段可列账号投影，用最新 name/email 覆盖存储里的显示名（改名后即时生效）。
+            let runtime = store::list_runtime_accounts(&call.host)
+                .await
+                .unwrap_or_default();
             let index = store::load_index(&call.host).await.unwrap_or_default();
             let mut accounts = Vec::new();
+            let mut alerts = Vec::new();
             for item in index {
                 let Some(id) = item.get("account_id").and_then(|id| id.as_str()) else {
                     continue;
                 };
-                if let Ok(Some((state, _))) = store::load_account(&call.host, id).await {
-                    accounts.push(json!({
+                let Ok(Some((state, _))) = store::load_account(&call.host, id).await else {
+                    continue;
+                };
+                let name = runtime
+                    .get(id)
+                    .and_then(store::runtime_label)
+                    .or(state.display_name.clone());
+                accounts.push(json!({
+                    "account_id": state.account_id,
+                    "name": name,
+                    "provider": state.provider,
+                    "model": state.model,
+                    "status": status_label(state.status),
+                    "verdict_streak": state.verdict_streak,
+                    "last_observed_at_ms": state.last_observed_at_ms,
+                    "last_alert_at_ms": state.last_alert_at_ms,
+                    "window_events": state.events.len(),
+                    "signaled_events": state.events.iter().filter(|event| !event.signals.is_empty()).count(),
+                }));
+                for alert in &state.alerts {
+                    alerts.push(json!({
                         "account_id": state.account_id,
-                        "provider": state.provider,
-                        "model": state.model,
-                        "status": status_label(state.status),
-                        "verdict_streak": state.verdict_streak,
-                        "last_observed_at_ms": state.last_observed_at_ms,
-                        "last_alert_at_ms": state.last_alert_at_ms,
-                        "window_events": state.events.len(),
-                        "signaled_events": state.events.iter().filter(|event| !event.signals.is_empty()).count(),
+                        "name": name,
+                        "at_ms": alert.at_ms,
+                        "verdict": alert.verdict,
+                        "deliveries": alert.deliveries,
                     }));
                 }
             }
+            alerts.sort_by_key(|item| {
+                item.get("at_ms")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0)
+            });
             json_response(
                 200,
                 json!({
                     "accounts": accounts,
+                    "alerts": alerts,
                     "config": effective_config(app, &call.host).await.redacted(),
                 }),
             )
+        }
+        ("POST", "account-clear") => {
+            let incoming: serde_json::Value =
+                serde_json::from_slice(&call.payload).unwrap_or_else(|_| json!({}));
+            let account = incoming
+                .get("account")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            if account.is_empty() {
+                return json_response(400, json!({"ok": false, "error": "missing account"}));
+            }
+            match store::delete_account(&call.host, &account).await {
+                Ok(deleted) => json_response(200, json!({"ok": true, "deleted": deleted})),
+                Err(error) => json_response(500, json!({"ok": false, "error": error.message})),
+            }
         }
         ("GET", "config") => json_response(200, effective_config(app, &call.host).await.redacted()),
         ("GET", "settings") => {
@@ -504,6 +588,12 @@ fn management_registration() -> ManagementRegistration {
             },
             ManagementRoute {
                 method: "POST".to_owned(),
+                path: "account-clear".to_owned(),
+                request_content_types: vec!["application/json".to_owned()],
+                response_content_types: vec!["application/json".to_owned()],
+            },
+            ManagementRoute {
+                method: "POST".to_owned(),
                 path: "test-notify".to_owned(),
                 request_content_types: vec!["application/json".to_owned()],
                 response_content_types: vec!["application/json".to_owned()],
@@ -549,6 +639,7 @@ mod tests {
         assert!(manifest.permissions.contains(&Permission::Network));
         assert!(manifest.permissions.contains(&Permission::Requests));
         assert!(manifest.permissions.contains(&Permission::PublicEndpoints));
+        assert!(manifest.permissions.contains(&Permission::Accounts));
         // 清单中保留 request lifecycle、usage、management 三类贡献点。
         for capability in [
             Capability::RequestLifecycle,

@@ -16,6 +16,7 @@
         </div>
         <div class="actions">
           <button class="btn" id="refresh-btn" type="button">刷新</button>
+          <button class="btn" id="open-settings" type="button">通知设置</button>
           <button class="btn primary" id="test-btn" type="button">发送测试通知</button>
         </div>
       </header>
@@ -35,6 +36,25 @@
           </thead>
           <tbody id="accounts-body">
             <tr><td colspan="8" class="empty">暂无数据</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card" id="history-card">
+      <header class="card-head">
+        <div>
+          <h2 class="card-title">告警历史</h2>
+          <p class="card-sub">跨账号的最近告警记录；同账号告警受冷却时间限制。</p>
+        </div>
+      </header>
+      <div class="table-wrap">
+        <table class="table compact">
+          <thead>
+            <tr><th>时间</th><th>账号</th><th>结论</th><th>投递</th></tr>
+          </thead>
+          <tbody id="history-body">
+            <tr><td colspan="4" class="empty">暂无告警</td></tr>
           </tbody>
         </table>
       </div>
@@ -61,7 +81,7 @@
           </div>
         </section>
         <section>
-          <h3 class="block-title">告警历史</h3>
+          <h3 class="block-title">该账号告警</h3>
           <div class="table-wrap">
             <table class="table compact">
               <thead>
@@ -74,107 +94,108 @@
       </div>
     </section>
 
-    <section class="card" id="notify-card">
-      <header class="card-head">
-        <div>
-          <h2 class="card-title">通知设置</h2>
-          <p class="card-sub" id="notify-sub">保存后立即生效，无需修改宿主配置；认证头为敏感字段，不回显。</p>
+    <div class="modal" id="settings-modal" hidden>
+      <div class="modal-mask" data-close></div>
+      <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+        <header class="modal-head">
+          <div>
+            <h2 class="card-title" id="settings-title">通知设置</h2>
+            <p class="card-sub" id="notify-sub">保存后立即生效，无需修改宿主配置；认证头为敏感字段，不回显。</p>
+          </div>
+          <button class="btn link modal-close" id="settings-close" type="button" aria-label="关闭">✕</button>
+        </header>
+        <div class="modal-body">
+          <form id="notify-form" class="form">
+            <div class="form-section">
+              <h3 class="block-title">Webhook 机器人</h3>
+              <div class="form-grid">
+                <label class="field">
+                  <span>Webhook 地址</span>
+                  <input type="url" id="f-webhook-url" placeholder="https://oapi.dingtalk.com/robot/send?access_token=…" autocomplete="off" />
+                </label>
+                <label class="field">
+                  <span>格式</span>
+                  <select id="f-webhook-format">
+                    <option value="generic">generic（结构化 JSON）</option>
+                    <option value="wecom">企业微信</option>
+                    <option value="dingtalk">钉钉</option>
+                    <option value="feishu">飞书</option>
+                    <option value="slack">Slack</option>
+                    <option value="bark">Bark</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>认证头（可选，留空不修改）</span>
+                  <input type="password" id="f-webhook-auth" placeholder="Header-Name: value" autocomplete="off" />
+                </label>
+                <label class="check">
+                  <input type="checkbox" id="f-webhook-auth-clear" /> 清空 Webhook 认证头
+                </label>
+              </div>
+            </div>
+            <div class="form-section">
+              <h3 class="block-title">邮件 HTTP API</h3>
+              <div class="form-grid">
+                <label class="field">
+                  <span>API 地址</span>
+                  <input type="url" id="f-email-url" placeholder="https://api.resend.com/emails" autocomplete="off" />
+                </label>
+                <label class="field">
+                  <span>格式</span>
+                  <select id="f-email-format">
+                    <option value="generic">generic（自定义模板）</option>
+                    <option value="resend">Resend</option>
+                    <option value="postmark">Postmark</option>
+                    <option value="sendgrid">SendGrid</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>发件人</span>
+                  <input type="text" id="f-email-from" placeholder="watch@example.com" autocomplete="off" />
+                </label>
+                <label class="field">
+                  <span>收件人（逗号或换行分隔）</span>
+                  <input type="text" id="f-email-to" placeholder="ops@example.com, team@example.com" autocomplete="off" />
+                </label>
+                <label class="field">
+                  <span>主题模板</span>
+                  <input type="text" id="f-email-subject" placeholder="[降智告警] {{account}} 信号 {{count}} 项" autocomplete="off" />
+                </label>
+                <label class="field">
+                  <span>正文模板（generic 格式，JSON）</span>
+                  <input type="text" id="f-email-body" placeholder="{&quot;title&quot;:&quot;{{title}}&quot;,&quot;detail&quot;:&quot;{{detail}}&quot;}" autocomplete="off" />
+                </label>
+                <label class="field">
+                  <span>认证头（可选，留空不修改）</span>
+                  <input type="password" id="f-email-auth" placeholder="Header-Name: value" autocomplete="off" />
+                </label>
+                <label class="check">
+                  <input type="checkbox" id="f-email-auth-clear" /> 清空邮件认证头
+                </label>
+              </div>
+            </div>
+            <div class="form-section">
+              <h3 class="block-title">通知文案</h3>
+              <label class="field wide">
+                <span>附加提示语（加入钉钉关键词等安全校验词）</span>
+                <input type="text" id="f-alert-message" placeholder="检测到该账号持续出现降智特征，建议切换账号或稍后再用。" autocomplete="off" />
+              </label>
+            </div>
+            <p class="form-hint" id="settings-hint"></p>
+          </form>
+          <section class="config-block">
+            <h3 class="block-title">当前生效配置</h3>
+            <dl class="config" id="config-body"></dl>
+          </section>
         </div>
-        <div class="actions">
+        <footer class="modal-foot">
           <button class="btn" id="reset-settings" type="button">恢复默认</button>
+          <span class="modal-foot-gap"></span>
           <button class="btn" id="reload-settings" type="button">重载</button>
           <button class="btn primary" id="save-settings" type="button">保存设置</button>
-        </div>
-      </header>
-      <form id="notify-form" class="form">
-        <div class="form-section">
-          <h3 class="block-title">Webhook 机器人</h3>
-          <div class="form-grid">
-            <label class="field">
-              <span>Webhook 地址</span>
-              <input type="url" id="f-webhook-url" placeholder="https://oapi.dingtalk.com/robot/send?access_token=…" autocomplete="off" />
-            </label>
-            <label class="field">
-              <span>格式</span>
-              <select id="f-webhook-format">
-                <option value="generic">generic（结构化 JSON）</option>
-                <option value="wecom">企业微信</option>
-                <option value="dingtalk">钉钉</option>
-                <option value="feishu">飞书</option>
-                <option value="slack">Slack</option>
-                <option value="bark">Bark</option>
-              </select>
-            </label>
-            <label class="field">
-              <span>认证头（可选，留空不修改）</span>
-              <input type="password" id="f-webhook-auth" placeholder="Header-Name: value" autocomplete="off" />
-            </label>
-            <label class="check">
-              <input type="checkbox" id="f-webhook-auth-clear" /> 清空 Webhook 认证头
-            </label>
-          </div>
-        </div>
-        <div class="form-section">
-          <h3 class="block-title">邮件 HTTP API</h3>
-          <div class="form-grid">
-            <label class="field">
-              <span>API 地址</span>
-              <input type="url" id="f-email-url" placeholder="https://api.resend.com/emails" autocomplete="off" />
-            </label>
-            <label class="field">
-              <span>格式</span>
-              <select id="f-email-format">
-                <option value="generic">generic（自定义模板）</option>
-                <option value="resend">Resend</option>
-                <option value="postmark">Postmark</option>
-                <option value="sendgrid">SendGrid</option>
-              </select>
-            </label>
-            <label class="field">
-              <span>发件人</span>
-              <input type="text" id="f-email-from" placeholder="watch@example.com" autocomplete="off" />
-            </label>
-            <label class="field">
-              <span>收件人（逗号或换行分隔）</span>
-              <input type="text" id="f-email-to" placeholder="ops@example.com, team@example.com" autocomplete="off" />
-            </label>
-            <label class="field">
-              <span>主题模板</span>
-              <input type="text" id="f-email-subject" placeholder="[降智告警] {{account}} 信号 {{count}} 项" autocomplete="off" />
-            </label>
-            <label class="field">
-              <span>正文模板（generic 格式，JSON）</span>
-              <input type="text" id="f-email-body" placeholder="{\"title\":\"{{title}}\",\"detail\":\"{{detail}}\"}" autocomplete="off" />
-            </label>
-            <label class="field">
-              <span>认证头（可选，留空不修改）</span>
-              <input type="password" id="f-email-auth" placeholder="Header-Name: value" autocomplete="off" />
-            </label>
-            <label class="check">
-              <input type="checkbox" id="f-email-auth-clear" /> 清空邮件认证头
-            </label>
-          </div>
-        </div>
-        <div class="form-section">
-          <h3 class="block-title">通知文案</h3>
-          <label class="field wide">
-            <span>附加提示语（加入钉钉关键词等安全校验词）</span>
-            <input type="text" id="f-alert-message" placeholder="检测到该账号持续出现降智特征，建议切换账号或稍后再用。" autocomplete="off" />
-          </label>
-        </div>
-        <p class="form-hint" id="settings-hint"></p>
-      </form>
-    </section>
-
-    <section class="card" id="config-card">
-      <header class="card-head">
-        <div>
-          <h2 class="card-title">当前配置</h2>
-          <p class="card-sub">生效配置（宿主配置 + 本页保存的通知设置）；敏感字段不回显。</p>
-        </div>
-      </header>
-      <dl class="config" id="config-body"></dl>
-    </section>
+        </footer>
+      </div>
+    </div>
 
     <div class="toast" id="toast" role="status" hidden></div>
   </main>

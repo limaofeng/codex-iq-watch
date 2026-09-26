@@ -5,6 +5,7 @@
   var bridge = window.codexProxyPlugin;
 
   var accountsBody = document.getElementById('accounts-body');
+  var historyBody = document.getElementById('history-body');
   var statusSub = document.getElementById('status-sub');
   var detailCard = document.getElementById('detail-card');
   var detailTitle = document.getElementById('detail-title');
@@ -16,6 +17,9 @@
   var testBtn = document.getElementById('test-btn');
   var refreshBtn = document.getElementById('refresh-btn');
   var detailClose = document.getElementById('detail-close');
+  var settingsModal = document.getElementById('settings-modal');
+  var openSettingsBtn = document.getElementById('open-settings');
+  var settingsCloseBtn = document.getElementById('settings-close');
   var saveBtn = document.getElementById('save-settings');
   var resetBtn = document.getElementById('reset-settings');
   var reloadSettingsBtn = document.getElementById('reload-settings');
@@ -89,6 +93,17 @@
     showToast.timer = window.setTimeout(function () { toast.hidden = true; }, 8000);
   }
 
+  /* 账号显示名：优先宿主 name/email，缺省显示截断的内部 ID。 */
+  function accountLabel(item) {
+    var name = item && item.name ? item.name : '';
+    var id = item && item.account_id ? item.account_id : '';
+    if (!name) return esc(id || '—');
+    var idCell = id
+      ? '<div class="mono muted small" title="' + esc(id) + '">' + esc(id) + '</div>'
+      : '';
+    return '<div class="account-name">' + esc(name) + '</div>' + idCell;
+  }
+
   function renderAccounts(accounts) {
     if (!accounts.length) {
       accountsBody.innerHTML = '<tr><td colspan="8" class="empty">暂无账号观察数据</td></tr>';
@@ -100,21 +115,54 @@
         : account.status === 'suspect' ? 'suspect'
         : account.status === 'healthy' ? 'healthy' : '';
       return '<tr>'
-        + '<td class="mono">' + esc(account.account_id) + '</td>'
+        + '<td>' + accountLabel(account) + '</td>'
         + '<td>' + esc(account.provider || '—') + '</td>'
         + '<td>' + esc(account.model || '—') + '</td>'
         + '<td><span class="tag ' + cls + '">' + esc(status) + '</span></td>'
         + '<td>' + (account.signaled_events || 0) + ' / ' + (account.window_events || 0) + '</td>'
         + '<td>' + esc(formatMs(account.last_observed_at_ms)) + '</td>'
         + '<td>' + esc(account.last_alert_at_ms ? formatMs(account.last_alert_at_ms) : '—') + '</td>'
-        + '<td><button class="btn link" data-account="' + esc(account.account_id) + '" type="button">详情</button></td>'
+        + '<td>'
+        + '<button class="btn link" data-account="' + esc(account.account_id) + '" data-name="' + esc(account.name || account.account_id) + '" type="button">详情</button>'
+        + '<button class="btn link danger" data-clear="' + esc(account.account_id) + '" type="button">清除</button>'
+        + '</td>'
         + '</tr>';
     }).join('');
     accountsBody.querySelectorAll('button[data-account]').forEach(function (button) {
       button.addEventListener('click', function () {
-        loadDetail(button.getAttribute('data-account'));
+        loadDetail(button.getAttribute('data-account'), button.getAttribute('data-name'));
       });
     });
+    accountsBody.querySelectorAll('button[data-clear]').forEach(function (button) {
+      button.addEventListener('click', function () {
+        clearAccount(button.getAttribute('data-clear'));
+      });
+    });
+  }
+
+  function renderHistory(alerts) {
+    var list = (alerts || []).slice().reverse();
+    if (!list.length) {
+      historyBody.innerHTML = '<tr><td colspan="4" class="empty">暂无告警；账号持续命中降智判定且过了冷却期才会记录</td></tr>';
+      return;
+    }
+    historyBody.innerHTML = list.map(function (alert) {
+      var verdict = alert.verdict || {};
+      var kinds = (verdict.signal_kinds || []).map(function (kind) {
+        return SIGNAL_LABELS[kind] || kind;
+      }).join('、');
+      var deliveries = (alert.deliveries || []).map(function (d) {
+        return '<span class="' + (d.ok ? 'ok' : 'fail') + '">'
+          + esc(d.channel) + (d.ok ? ' ✓' : ' ✗ ' + esc(d.detail))
+          + '</span>';
+      }).join('<br>') || '<span class="muted">未配置渠道</span>';
+      return '<tr>'
+        + '<td>' + esc(formatMs(alert.at_ms)) + '</td>'
+        + '<td>' + accountLabel(alert) + '</td>'
+        + '<td>' + esc((verdict.signaled_requests || 0) + ' 个信号：' + kinds) + '</td>'
+        + '<td>' + deliveries + '</td>'
+        + '</tr>';
+    }).join('');
   }
 
   function renderConfig(config) {
@@ -187,6 +235,7 @@
     statusSub.textContent = '正在加载…';
     request({ method: 'GET', path: 'status' }).then(function (data) {
       renderAccounts(data.accounts || []);
+      renderHistory(data.alerts || []);
       renderConfig(data.config || {});
       var total = (data.accounts || []).length;
       var degraded = (data.accounts || []).filter(function (a) { return a.status === 'degraded'; }).length;
@@ -198,11 +247,13 @@
     });
   }
 
-  function loadDetail(accountId) {
+  function loadDetail(accountId, label) {
     if (!accountId) return;
     detailCard.hidden = false;
     detailTitle.textContent = '账号详情';
-    detailSub.textContent = accountId;
+    detailSub.textContent = (label && label !== accountId)
+      ? (label + '（' + accountId + '）')
+      : accountId;
     eventsBody.innerHTML = '<tr><td colspan="6" class="empty">正在加载…</td></tr>';
     alertsBody.innerHTML = '<tr><td colspan="3" class="empty">正在加载…</td></tr>';
     var query = 'account=' + encodeURIComponent(accountId);
@@ -218,7 +269,37 @@
     });
   }
 
+  function clearAccount(accountId) {
+    if (!accountId) return;
+    if (!window.confirm('清除该账号的窗口事件、判定计数与告警历史？监控会在下一次请求终态后重新开始。')) {
+      return;
+    }
+    request({
+      method: 'POST',
+      path: 'account-clear',
+      contentType: 'application/json',
+      body: JSON.stringify({ account: accountId }),
+    }).then(function () {
+      if (!detailCard.hidden && detailSub.textContent.indexOf(accountId) !== -1) {
+        detailCard.hidden = true;
+      }
+      showToast('已清除账号观察记录', true);
+      loadStatus();
+    }).catch(function (error) {
+      showToast('清除失败：' + error.message, false);
+    });
+  }
+
   function read(id) { return field(id).value.trim(); }
+
+  function openSettings() {
+    settingsModal.hidden = false;
+    loadSettings();
+  }
+
+  function closeSettings() {
+    settingsModal.hidden = true;
+  }
 
   function loadSettings() {
     settingsHint.className = 'form-hint';
@@ -300,6 +381,18 @@
 
   refreshBtn.addEventListener('click', loadStatus);
   reloadSettingsBtn.addEventListener('click', loadSettings);
+  openSettingsBtn.addEventListener('click', openSettings);
+  settingsCloseBtn.addEventListener('click', closeSettings);
+  settingsModal.addEventListener('click', function (event) {
+    if (event.target && event.target.hasAttribute('data-close')) {
+      closeSettings();
+    }
+  });
+  document.addEventListener('keydown', function (event) {
+    if (event.key === 'Escape' && !settingsModal.hidden) {
+      closeSettings();
+    }
+  });
   resetBtn.addEventListener('click', function () {
     if (!window.confirm('恢复默认将删除本页保存的全部通知设置（含认证头），改回宿主配置。继续吗？')) {
       return;
@@ -338,7 +431,7 @@
       var deliveries = data.deliveries || [];
       var lines = deliveries.map(deliveryLine).join('<br>');
       if (!deliveries.length) {
-        showToast('未配置通知渠道：先在下方「通知设置」填写 Webhook 或邮件地址', false);
+        showToast('未配置通知渠道：打开「通知设置」填写 Webhook 或邮件地址', false);
       } else if (deliveries.every(function (d) { return d.ok; })) {
         toast.innerHTML = '测试通知已发送：<br>' + lines;
         toast.className = 'toast ok';
@@ -358,5 +451,4 @@
   });
 
   loadStatus();
-  loadSettings();
 })();

@@ -22,8 +22,10 @@
 ## 能力声明
 
 - `request_lifecycle` + `usage`：观察请求终态与用量（`policy.observe_request`）
-- `management`：状态页与 `status`/`events`/`alerts`/`test-notify` 管理路由
-- 权限：`requests`（观察事实）、`network`（通知出站）、`public_endpoints`（页面图标）
+- `management`：状态页（账号状态＋聚合告警历史＋信号详情）与 `status`/`events`/`alerts`/`settings`/`test-notify`/`account-clear` 管理路由
+- 权限：`requests`（观察事实）、`network`（通知出站）、`accounts`（账号显示名解析）、`public_endpoints`（页面图标）
+
+告警通知与管理页显示的账号名来自 `host.auth.get_runtime`/`host.auth.list`（`accounts` 权限），不可用时回退为内部账号 ID；状态页表格每行支持「清除」重置该账号观察记录。
 
 ## 构建
 

@@ -53,6 +53,9 @@ pub struct RequestEvent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccountState {
     pub account_id: String,
+    /// 宿主账号显示名（name/email），观察阶段按需填充；不可用时通知回退为内部 ID。
+    #[serde(default)]
+    pub display_name: Option<String>,
     pub provider: Option<String>,
     pub model: Option<String>,
     /// 账号历史上是否出现过缓存命中，作为骤降基线。
@@ -113,9 +116,19 @@ pub const EVENT_LIMIT: usize = 40;
 pub const ALERT_LIMIT: usize = 50;
 
 impl AccountState {
+    /// 界面与通知里的人类可读标识：优先显示名，缺省回退为内部账号 ID。
+    #[must_use]
+    pub fn display_label(&self) -> &str {
+        self.display_name
+            .as_deref()
+            .filter(|name| !name.is_empty())
+            .unwrap_or(&self.account_id)
+    }
+
     pub fn new(account_id: &str, now_ms: u64) -> Self {
         Self {
             account_id: account_id.to_owned(),
+            display_name: None,
             provider: None,
             model: None,
             cache_baseline_hit: false,
@@ -352,9 +365,11 @@ pub fn render_alert(
         .map(|signal| signal.description())
         .collect::<Vec<_>>()
         .join("、");
-    let title = format!("Codex 降智告警：账号 {} 疑似降智", state.account_id);
+    let label = state.display_label();
+    let title = format!("Codex 降智告警：账号 {label} 疑似降智");
     let mut detail = format!(
-        "账号 {}（Provider：{}，模型：{}）在 {} 分钟窗口内出现 {} 个带信号请求，命中信号：{}。判定已持续 {} 次。",
+        "账号 {}（{}，Provider：{}，模型：{}）在 {} 分钟窗口内出现 {} 个带信号请求，命中信号：{}。判定已持续 {} 次。",
+        label,
         state.account_id,
         state.provider.as_deref().unwrap_or("未知"),
         state.model.as_deref().unwrap_or("未知"),
