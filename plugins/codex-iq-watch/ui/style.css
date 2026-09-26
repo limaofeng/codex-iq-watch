@@ -86,6 +86,8 @@ body {
   background: none;
   color: var(--info);
 }
+/* 相邻链接按钮留间距，避免渲染成连着的文字（如“测试详情”）。 */
+.btn.link + .btn.link { margin-left: 10px; }
 .btn[disabled] { opacity: .5; cursor: not-allowed; }
 
 .table-wrap { overflow-x: auto; }
@@ -275,7 +277,7 @@ body {
 
 .small { font-size: 11px; }
 .account-name { font-weight: 500; }
-.btn.link.danger { color: var(--danger); margin-left: 10px; }
+.btn.link.danger { color: var(--danger); }
 .btn.link.danger:hover { color: var(--danger); filter: brightness(1.05); }
 .ok { color: var(--success); }
 .fail { color: var(--danger); }

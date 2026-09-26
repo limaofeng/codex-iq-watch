@@ -263,6 +263,7 @@ fn outcome_name(outcome: &RequestOutcome) -> &'static str {
 }
 
 /// 容量类错误：上游明确 502/503/529，或错误码命中过载关键词。
+/// 429/rate_limit 是限流而非容量耗尽，不算降智信号。
 #[must_use]
 pub fn is_overload(upstream_status: Option<u16>, error_code: Option<&str>) -> bool {
     if matches!(upstream_status, Some(502 | 503 | 529)) {
@@ -270,10 +271,7 @@ pub fn is_overload(upstream_status: Option<u16>, error_code: Option<&str>) -> bo
     }
     error_code.is_some_and(|code| {
         let code = code.to_ascii_lowercase();
-        code.contains("overload")
-            || code.contains("capacity")
-            || code.contains("rate_limit")
-            || code.contains("engine_overloaded")
+        code.contains("overload") || code.contains("capacity") || code.contains("engine_overloaded")
     })
 }
 
@@ -417,6 +415,10 @@ mod tests {
         assert!(is_overload(None, Some("engine_overloaded_error")));
         assert!(is_overload(None, Some("model_at_capacity")));
         assert!(!is_overload(Some(500), None));
+        assert!(!is_overload(Some(429), None));
+        // 限流不算降智：429 / rate_limit_exceeded 属于配额或节奏限制。
+        assert!(!is_overload(None, Some("rate_limit_exceeded")));
+        assert!(!is_overload(Some(429), Some("rate_limit_exceeded")));
         assert!(!is_overload(None, Some("invalid_request")));
     }
 

@@ -6,7 +6,7 @@
 
 | 信号 | 条件 | 默认阈值 |
 | --- | --- | --- |
-| `upstream_overload` | 上游返回 502/503/529，或错误码含 overload/capacity 关键词 | — |
+| `upstream_overload` | 上游返回 502/503/529，或错误码含 overload/capacity 关键词；429/rate_limit 属限流，不计入 | — |
 | `cache_collapse` | 账号此前缓存持续命中，本次输入 ≥ 下限且 `cached_tokens = 0` | 输入 ≥ 1000 tokens |
 | `slow_response` | 首 token 耗时超阈值（整体耗时不计入，避免长回答误报） | 首 token ≥ 10s |
 
