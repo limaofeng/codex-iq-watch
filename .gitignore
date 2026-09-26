@@ -1,0 +1,17 @@
+# 操作系统
+.DS_Store
+Thumbs.db
+
+# Rust 构建产物
+target/
+**/target/
+
+# 打包输出
+dist/
+**/dist/
+
+# 本地工具与临时文件
+*.local
+*.log
+.tmp/
+tmp/

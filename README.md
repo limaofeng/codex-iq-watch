@@ -1,0 +1,27 @@
+# codex-plugins
+
+Codex Proxy RS（codex-proxy-rs）的独立网关插件集。插件通过公开 `gateway-plugin-sdk` 与宿主通信，不修改宿主业务模块。
+
+## 目录
+
+| 目录 | 说明 |
+| --- | --- |
+| `plugins/codex-iq-watch` | Codex 降智监控插件：观察账号级信号（上游过载、缓存命中骤降、响应变慢），按窗口判定降智并通过 Webhook／邮件 HTTP API 告警 |
+| `scripts/` | 打包等工程脚本（`cpr-plugin package` 封装） |
+
+## 契约版本
+
+- SDK `0.1.0`、`manifestVersion: 1`、进程协议 `1`
+- 目标宿主：`codex-proxy-rs >=3.15.0, <4.0.0`（以 `engines` 声明为准）
+- 宿主侧合同：`codex-proxy-rs/backend/crates/gateway-plugin/{sdk,runtime}`
+
+## 构建
+
+插件只依赖公开 SDK。SDK 未独立发布时，本地通过 Cargo 路径依赖引用宿主仓库源码，路径见各插件 `Cargo.toml`。
+
+```bash
+cargo test --manifest-path plugins/codex-iq-watch/Cargo.toml
+cargo build --manifest-path plugins/codex-iq-watch/Cargo.toml --release
+```
+
+打包见 `scripts/` 与各插件 README。

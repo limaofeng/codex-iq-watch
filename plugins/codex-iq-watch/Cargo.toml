@@ -1,0 +1,17 @@
+[package]
+name = "codex-iq-watch"
+version = "0.1.0"
+edition = "2024"
+description = "Codex 降智监控插件：观察账号级信号并通过 Webhook/邮件 API 告警"
+license = "MIT"
+publish = false
+
+[dependencies]
+gateway-plugin-sdk = { path = "../../../codex-proxy-rs/backend/crates/gateway-plugin/sdk", features = ["io"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+thiserror = "2.0.18"
+tokio = { version = "1.52.3", default-features = false, features = ["io-std", "io-util", "macros", "rt-multi-thread", "sync", "time"] }
+
+[dev-dependencies]
+gateway-plugin-sdk = { path = "../../../codex-proxy-rs/backend/crates/gateway-plugin/sdk" }

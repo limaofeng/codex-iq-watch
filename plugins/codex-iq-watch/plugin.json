@@ -1,0 +1,166 @@
+{
+  "manifestVersion": 1,
+  "name": "codex-iq-watch",
+  "displayName": "Codex 降智监控",
+  "publisher": "xunzhimeng",
+  "version": "0.1.0",
+  "description": "按账号观察上游过载、缓存命中骤降与响应变慢等降智信号，持续命中时通过 Webhook 或邮件 HTTP API 告警。",
+  "license": "MIT",
+  "author": "xunzhimeng",
+  "engines": {
+    "codex-proxy-rs": ">=3.15.0, <4.0.0"
+  },
+  "main": "bin/codex-iq-watch",
+  "runtime": "trustedProcess",
+  "contributes": {
+    "request_lifecycle": {},
+    "usage": {},
+    "management": {}
+  },
+  "permissions": ["requests", "network", "public_endpoints"],
+  "configurationSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "enabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "为 false 时仍统计信号但不发送通知"
+      },
+      "watch_providers": {
+        "type": "array",
+        "items": { "type": "string", "maxLength": 64 },
+        "default": ["openai"],
+        "description": "只监控这些 Provider 的请求；留空数组表示全部"
+      },
+      "window_ms": {
+        "type": "integer",
+        "minimum": 60000,
+        "maximum": 3600000,
+        "default": 900000,
+        "description": "信号统计窗口（毫秒），默认 15 分钟"
+      },
+      "min_signaled_requests": {
+        "type": "integer",
+        "minimum": 2,
+        "maximum": 20,
+        "default": 2,
+        "description": "窗口内带信号的请求数达到该值才考虑告警"
+      },
+      "min_signal_kinds": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 5,
+        "default": 2,
+        "description": "窗口内至少出现多少种不同信号才判定降智"
+      },
+      "consecutive_triggers": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 10,
+        "default": 2,
+        "description": "判定结论连续出现多少次才真正告警"
+      },
+      "cooldown_ms": {
+        "type": "integer",
+        "minimum": 60000,
+        "maximum": 86400000,
+        "default": 1800000,
+        "description": "同一账号两次告警的最小间隔（毫秒），默认 30 分钟"
+      },
+      "latency_ms": {
+        "type": "integer",
+        "minimum": 1000,
+        "maximum": 600000,
+        "default": 10000,
+        "description": "整体耗时超过该值记为响应变慢信号"
+      },
+      "first_token_ms": {
+        "type": "integer",
+        "minimum": 1000,
+        "maximum": 600000,
+        "default": 10000,
+        "description": "首 token 耗时超过该值记为响应变慢信号"
+      },
+      "cache_min_input_tokens": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 1000000,
+        "default": 1000,
+        "description": "输入达到该 token 数才参与缓存命中骤降判定，避免小请求误报"
+      },
+      "alert_message": {
+        "type": "string",
+        "default": "检测到该账号持续出现降智特征，建议切换账号或稍后再用。",
+        "description": "附加在通知正文中的提示语"
+      },
+      "webhook_url": {
+        "type": "string",
+        "default": "",
+        "description": "通知 Webhook 地址（HTTPS）；为空则不发送 Webhook"
+      },
+      "webhook_format": {
+        "type": "string",
+        "enum": ["generic", "wecom", "dingtalk", "feishu", "slack", "bark"],
+        "default": "generic",
+        "description": "Webhook 载荷格式：generic 为结构化 JSON，其余为常见机器人格式"
+      },
+      "email_url": {
+        "type": "string",
+        "default": "",
+        "description": "邮件 HTTP API 地址（如 Resend/Postmark/SendGrid 或自建邮件网关）；为空则不发送邮件"
+      },
+      "email_format": {
+        "type": "string",
+        "enum": ["generic", "resend", "postmark", "sendgrid"],
+        "default": "generic",
+        "description": "邮件 API 载荷格式"
+      },
+      "email_from": {
+        "type": "string",
+        "default": "",
+        "description": "发件人，按所选邮件 API 要求填写"
+      },
+      "email_to": {
+        "type": "array",
+        "items": { "type": "string", "maxLength": 256 },
+        "maxItems": 8,
+        "default": [],
+        "description": "收件人列表"
+      },
+      "email_subject_template": {
+        "type": "string",
+        "default": "[降智告警] {{account}} 信号 {{count}} 项",
+        "description": "邮件主题模板，支持 {{title}} {{account}} {{detail}} {{count}} 占位"
+      },
+      "email_body_template": {
+        "type": "string",
+        "default": "{\"title\": \"{{title}}\", \"detail\": \"{{detail}}\", \"account\": \"{{account}}\", \"occurred_at\": \"{{occurred_at}}\"}",
+        "description": "generic 邮件格式的请求体模板，{{...}} 占位会被转义后替换为 JSON 字符串"
+      }
+    }
+  },
+  "secretFields": [
+    "webhook_auth_header",
+    "email_auth_header"
+  ],
+  "resources": {
+    "ui/index.html": "text/html",
+    "ui/app.js": "text/javascript",
+    "ui/style.css": "text/css",
+    "ui/icon.svg": "image/svg+xml"
+  },
+  "icon": "ui/icon.svg",
+  "state": [
+    {
+      "namespace": "watch",
+      "schemaVersion": 1,
+      "schema": {
+        "type": "object"
+      },
+      "maximumRecords": 256,
+      "maximumBytes": 4194304,
+      "maximumValueBytes": 262144
+    }
+  ]
+}

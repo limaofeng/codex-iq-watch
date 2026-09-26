@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# 打包 codex-iq-watch 插件：cpr-plugin package --manifest ... --binary ... --resource-map ui=ui
+# 用法：scripts/package <target-triple> [插件目录]；产物输出到 插件目录/dist。
+set -euo pipefail
+
+TARGET="${1:-x86_64-unknown-linux-gnu}"
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+PLUGIN_DIR="${2:-$REPO_ROOT/plugins/codex-iq-watch}"
+HOST_REPO="${HOST_REPO:-$REPO_ROOT/../codex-proxy-rs}"
+
+BINARY_SUFFIX=""
+case "$TARGET" in
+  *windows*) BINARY_SUFFIX=".exe" ;;
+esac
+BINARY="$PLUGIN_DIR/target/$TARGET/release/codex-iq-watch$BINARY_SUFFIX"
+
+if [[ ! -f "$BINARY" ]]; then
+  echo "未找到二进制：$BINARY" >&2
+  echo "先执行：cargo build --manifest-path $PLUGIN_DIR/Cargo.toml --release --target $TARGET" >&2
+  exit 1
+fi
+
+exec cargo run --manifest-path "$HOST_REPO/backend/Cargo.toml" \
+  -p codex-proxy-plugin-cli --locked -- package \
+  --manifest "$PLUGIN_DIR/plugin.json" \
+  --binary "$BINARY" \
+  --target "$TARGET" \
+  --resource-map ui=ui \
+  --output-dir "$PLUGIN_DIR/dist"

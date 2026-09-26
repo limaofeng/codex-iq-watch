@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>降智监控</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main id="app">
+    <section class="card" id="status-card">
+      <header class="card-head">
+        <div>
+          <h2 class="card-title">账号降智状态</h2>
+          <p class="card-sub" id="status-sub">正在加载…</p>
+        </div>
+        <div class="actions">
+          <button class="btn" id="refresh-btn" type="button">刷新</button>
+          <button class="btn primary" id="test-btn" type="button">发送测试通知</button>
+        </div>
+      </header>
+      <div class="table-wrap">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>账号</th>
+              <th>Provider</th>
+              <th>模型</th>
+              <th>状态</th>
+              <th>窗口内信号</th>
+              <th>最近观察</th>
+              <th>最近告警</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="accounts-body">
+            <tr><td colspan="8" class="empty">暂无数据</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card" id="detail-card" hidden>
+      <header class="card-head">
+        <div>
+          <h2 class="card-title" id="detail-title">账号详情</h2>
+          <p class="card-sub" id="detail-sub"></p>
+        </div>
+        <button class="btn" id="detail-close" type="button">收起</button>
+      </header>
+      <div class="detail-grid">
+        <section>
+          <h3 class="block-title">最近信号</h3>
+          <div class="table-wrap">
+            <table class="table compact">
+              <thead>
+                <tr><th>时间</th><th>结果</th><th>信号</th><th>状态码</th><th>缓存/输入</th><th>耗时</th></tr>
+              </thead>
+              <tbody id="events-body"></tbody>
+            </table>
+          </div>
+        </section>
+        <section>
+          <h3 class="block-title">告警历史</h3>
+          <div class="table-wrap">
+            <table class="table compact">
+              <thead>
+                <tr><th>时间</th><th>结论</th><th>投递</th></tr>
+              </thead>
+              <tbody id="alerts-body"></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+    </section>
+
+    <section class="card" id="config-card">
+      <header class="card-head">
+        <div>
+          <h2 class="card-title">当前配置</h2>
+          <p class="card-sub">参数在宿主插件设置中修改；敏感字段不回显。</p>
+        </div>
+      </header>
+      <dl class="config" id="config-body"></dl>
+    </section>
+
+    <div class="toast" id="toast" role="status" hidden></div>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>
