@@ -10,6 +10,7 @@ use crate::detector::AccountState;
 
 pub const NAMESPACE: &str = "watch";
 const INDEX_KEY: &str = "accounts";
+const SETTINGS_KEY: &str = "settings";
 
 #[derive(Debug, thiserror::Error)]
 pub enum StateError {
@@ -185,6 +186,52 @@ pub async fn load_index(host: &HostClient) -> Result<Vec<serde_json::Value>, Plu
 
 fn account_key(account_id: &str) -> String {
     format!("acct:{account_id}")
+}
+
+/// 管理页保存的通知设置；返回原始值与 CAS 版本。
+pub async fn load_settings(
+    host: &HostClient,
+) -> Result<Option<(serde_json::Value, u64)>, PluginFault> {
+    let request = StateGetRequest {
+        namespace: NAMESPACE.to_owned(),
+        key: SETTINGS_KEY.to_owned(),
+    };
+    let reply = host
+        .call(
+            "host.state.get",
+            serde_json::to_value(request).unwrap_or_else(|_| serde_json::json!({})),
+            Vec::new(),
+        )
+        .await
+        .map_err(|error| error.into_plugin_fault())?;
+    let result: StateGetResult =
+        serde_json::from_value(reply.result).map_err(|_| StateError::Invalid.fault())?;
+    Ok(result.record.map(|record| (record.value, record.version)))
+}
+
+/// CAS 写入通知设置；允许创建与更新。
+pub async fn save_settings(
+    host: &HostClient,
+    value: &serde_json::Value,
+    expected_version: Option<u64>,
+) -> Result<u64, PluginFault> {
+    let request = StatePutRequest {
+        namespace: NAMESPACE.to_owned(),
+        key: SETTINGS_KEY.to_owned(),
+        value: value.clone(),
+        expected_version,
+    };
+    let reply = host
+        .call(
+            "host.state.put",
+            serde_json::to_value(request).unwrap_or_else(|_| serde_json::json!({})),
+            Vec::new(),
+        )
+        .await
+        .map_err(|error| error.into_plugin_fault())?;
+    serde_json::from_value::<gateway_plugin_sdk::call::host::StatePutResult>(reply.result)
+        .map(|result| result.version)
+        .map_err(|_| StateError::Invalid.fault())
 }
 
 /// 供管理页读取单个账号状态。

@@ -1,6 +1,7 @@
 //! 实例配置：由握手携带，宿主按 `configurationSchema` 校验，`secretFields` 合并到顶层。
 
 use serde::Deserialize;
+use serde_json::Value;
 
 /// 与 `plugin.json` 的 configurationSchema 一一对应；未知字段已在宿主侧被拒。
 #[derive(Debug, Clone, Deserialize)]
@@ -98,6 +99,46 @@ impl WatchConfig {
     pub fn watches_provider(&self, provider: Option<&str>) -> bool {
         self.watch_providers.is_empty()
             || provider.is_some_and(|id| self.watch_providers.iter().any(|item| item == id))
+    }
+
+    /// 管理页保存的通知设置，覆盖宿主配置中的同名字段；留空的 URL/认证头视为不覆盖。
+    pub fn apply_notify_settings(&mut self, settings: &Value) {
+        for (key, target) in [
+            ("webhook_url", &mut self.webhook_url as &mut String),
+            ("webhook_auth_header", &mut self.webhook_auth_header),
+            ("email_url", &mut self.email_url),
+            ("email_from", &mut self.email_from),
+            ("email_subject_template", &mut self.email_subject_template),
+            ("email_body_template", &mut self.email_body_template),
+            ("email_auth_header", &mut self.email_auth_header),
+            ("alert_message", &mut self.alert_message),
+        ] {
+            if let Some(value) = settings.get(key).and_then(Value::as_str) {
+                *target = value.trim().to_owned();
+            }
+        }
+        if let Some(value) = settings.get("webhook_format").and_then(Value::as_str)
+            && let Ok(format) =
+                serde_json::from_value::<WebhookFormat>(Value::String(value.to_owned()))
+        {
+            self.webhook_format = format;
+        }
+        if let Some(value) = settings.get("email_format").and_then(Value::as_str)
+            && let Ok(format) =
+                serde_json::from_value::<EmailFormat>(Value::String(value.to_owned()))
+        {
+            self.email_format = format;
+        }
+        if let Some(recipients) = settings.get("email_to").and_then(Value::as_array) {
+            self.email_to = recipients
+                .iter()
+                .filter_map(|item| item.as_str())
+                .map(str::trim)
+                .filter(|item| !item.is_empty())
+                .take(8)
+                .map(str::to_owned)
+                .collect();
+        }
     }
 
     /// 把 `Header-Name: value` 形式的敏感配置解析为头对；格式不合法时不发送。

@@ -16,6 +16,9 @@
   var testBtn = document.getElementById('test-btn');
   var refreshBtn = document.getElementById('refresh-btn');
   var detailClose = document.getElementById('detail-close');
+  var saveBtn = document.getElementById('save-settings');
+  var reloadSettingsBtn = document.getElementById('reload-settings');
+  var settingsHint = document.getElementById('settings-hint');
 
   var STATUS_LABELS = {
     unknown: '未知',
@@ -72,15 +75,17 @@
   function esc(text) {
     return String(text == null ? '' : text)
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
+      .replace(/\"/g, '&quot;');
   }
+
+  function field(id) { return document.getElementById(id); }
 
   function showToast(message, ok) {
     toast.textContent = message;
     toast.className = 'toast ' + (ok ? 'ok' : 'fail');
     toast.hidden = false;
     window.clearTimeout(showToast.timer);
-    showToast.timer = window.setTimeout(function () { toast.hidden = true; }, 5000);
+    showToast.timer = window.setTimeout(function () { toast.hidden = true; }, 8000);
   }
 
   function renderAccounts(accounts) {
@@ -123,6 +128,7 @@
       ['Webhook', config.webhook_url ? config.webhook_url : '未配置'],
       ['Webhook 格式', config.webhook_format || 'generic'],
       ['邮件', config.email_url ? config.email_url : '未配置'],
+      ['邮件格式', config.email_format || 'generic'],
       ['收件人', (config.email_to || []).join(', ') || '未配置'],
     ];
     configBody.innerHTML = items.map(function (item) {
@@ -211,8 +217,89 @@
     });
   }
 
+  function read(id) { return field(id).value.trim(); }
+
+  function loadSettings() {
+    settingsHint.className = 'form-hint';
+    settingsHint.textContent = '正在读取…';
+    request({ method: 'GET', path: 'settings' }).then(function (data) {
+      var settings = data.settings || {};
+      field('f-webhook-url').value = settings.webhook_url || '';
+      field('f-webhook-format').value = settings.webhook_format || 'generic';
+      field('f-webhook-auth').value = '';
+      field('f-webhook-auth').placeholder = settings.webhook_auth_header_configured
+        ? '已配置（留空保持，勾选清空后删除）' : 'Header-Name: value';
+      field('f-webhook-auth-clear').checked = false;
+      field('f-email-url').value = settings.email_url || '';
+      field('f-email-format').value = settings.email_format || 'generic';
+      field('f-email-from').value = settings.email_from || '';
+      field('f-email-to').value = (settings.email_to || []).join(', ');
+      field('f-email-subject').value = settings.email_subject_template || '';
+      field('f-email-body').value = settings.email_body_template || '';
+      field('f-email-auth').value = '';
+      field('f-email-auth').placeholder = settings.email_auth_header_configured
+        ? '已配置（留空保持，勾选清空后删除）' : 'Header-Name: value';
+      field('f-email-auth-clear').checked = false;
+      field('f-alert-message').value = settings.alert_message || '';
+      settingsHint.textContent = '认证头不回显；其余字段保存后立即生效，覆盖宿主配置中的同名项。';
+    }).catch(function (error) {
+      settingsHint.className = 'form-hint fail';
+      settingsHint.textContent = '读取设置失败：' + error.message;
+    });
+  }
+
+  function saveSettings() {
+    var to = read('f-email-to');
+    var payload = {
+      webhook_url: read('f-webhook-url'),
+      webhook_format: field('f-webhook-format').value,
+      webhook_auth_header: read('f-webhook-auth'),
+      clear_webhook_auth: field('f-webhook-auth-clear').checked,
+      email_url: read('f-email-url'),
+      email_format: field('f-email-format').value,
+      email_from: read('f-email-from'),
+      email_to: to ? to.split(/[,\n]/).map(function (item) { return item.trim(); }).filter(Boolean) : [],
+      email_subject_template: read('f-email-subject'),
+      email_body_template: read('f-email-body'),
+      email_auth_header: read('f-email-auth'),
+      clear_email_auth: field('f-email-auth-clear').checked,
+      alert_message: read('f-alert-message'),
+    };
+    saveBtn.disabled = true;
+    settingsHint.className = 'form-hint';
+    settingsHint.textContent = '正在保存…';
+    request({
+      method: 'POST',
+      path: 'settings',
+      contentType: 'application/json',
+      body: JSON.stringify(payload),
+    }).then(function (data) {
+      if (data.ok === false) {
+        throw new Error(data.error || '保存被拒绝');
+      }
+      settingsHint.className = 'form-hint ok';
+      settingsHint.textContent = '已保存，立即生效。';
+      loadSettings();
+      loadStatus();
+    }).catch(function (error) {
+      settingsHint.className = 'form-hint fail';
+      settingsHint.textContent = '保存失败：' + error.message;
+    }).finally(function () {
+      saveBtn.disabled = false;
+    });
+  }
+
+  function deliveryLine(d) {
+    return esc(d.channel) + (d.ok ? ' ✓' : ' ✗ ' + esc(d.detail || ''));
+  }
+
   refreshBtn.addEventListener('click', loadStatus);
+  reloadSettingsBtn.addEventListener('click', loadSettings);
   detailClose.addEventListener('click', function () { detailCard.hidden = true; });
+  saveBtn.addEventListener('click', function (event) {
+    event.preventDefault();
+    saveSettings();
+  });
   testBtn.addEventListener('click', function () {
     testBtn.disabled = true;
     request({
@@ -222,15 +309,20 @@
       body: '{}',
     }).then(function (data) {
       var deliveries = data.deliveries || [];
+      var lines = deliveries.map(deliveryLine).join('<br>');
       if (!deliveries.length) {
-        showToast('未配置通知渠道：请在插件设置中填写 Webhook 或邮件地址', false);
+        showToast('未配置通知渠道：先在下方「通知设置」填写 Webhook 或邮件地址', false);
       } else if (deliveries.every(function (d) { return d.ok; })) {
-        showToast('测试通知已发送（' + deliveries.map(function (d) { return d.channel; }).join('、') + '）', true);
+        toast.innerHTML = '测试通知已发送：<br>' + lines;
+        toast.className = 'toast ok';
+        toast.hidden = false;
       } else {
-        showToast('部分渠道发送失败：' + deliveries.map(function (d) {
-          return d.channel + (d.ok ? ' ✓' : ' ✗');
-        }).join('、'), false);
+        toast.innerHTML = '部分渠道发送失败：<br>' + lines;
+        toast.className = 'toast fail';
+        toast.hidden = false;
       }
+      window.clearTimeout(testBtn.timer);
+      testBtn.timer = window.setTimeout(function () { toast.hidden = true; }, 10000);
     }).catch(function (error) {
       showToast('发送失败：' + error.message, false);
     }).finally(function () {
@@ -239,4 +331,5 @@
   });
 
   loadStatus();
+  loadSettings();
 })();

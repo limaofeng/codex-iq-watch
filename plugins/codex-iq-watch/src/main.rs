@@ -28,7 +28,17 @@ use crate::{
 };
 
 struct App {
+    /// 宿主握手配置；页面保存的通知设置在 `effective_config` 中按需叠加。
     config: WatchConfig,
+}
+
+/// 生效配置 = 宿主配置 + 管理页保存的通知覆盖；每次调用读取，保证保存后立即生效。
+async fn effective_config(app: &App, host: &HostClient) -> WatchConfig {
+    let mut config = app.config.clone();
+    if let Ok(Some((settings, _))) = store::load_settings(host).await {
+        config.apply_notify_settings(&settings);
+    }
+    config.normalized()
 }
 
 #[tokio::main]
@@ -85,10 +95,11 @@ async fn observe_request(
     let Some(account_id) = account_id else {
         return Ok(TypedReply::new(Empty {}));
     };
-    if !app.config.watches_provider(observation.provider.as_deref()) {
+    let config = effective_config(app, &call.host).await;
+    if !config.watches_provider(observation.provider.as_deref()) {
         return Ok(TypedReply::new(Empty {}));
     }
-    if let Err(error) = observe_inner(app, &call.host, &account_id, observation).await {
+    if let Err(error) = observe_inner(app, &call.host, &config, &account_id, observation).await {
         log(&call.host, "watch_observe_failed", &error.message).await;
     }
     Ok(TypedReply::new(Empty {}))
@@ -97,6 +108,7 @@ async fn observe_request(
 async fn observe_inner(
     app: &App,
     host: &HostClient,
+    config: &WatchConfig,
     account_id: &str,
     observation: ObserveRequest,
 ) -> Result<(), PluginFault> {
@@ -107,15 +119,15 @@ async fn observe_inner(
         let loaded = store::load_account(host, account_id).await?;
         let (mut state, version) =
             loaded.unwrap_or_else(|| (AccountState::new(account_id, now_ms), 0));
-        let event = extract_event(&observation, &app.config, state.cache_baseline_hit);
-        let verdict = apply_event(&mut state, event, &observation, &app.config);
-        let alert = should_alert(&state, &verdict, &app.config);
+        let event = extract_event(&observation, config, state.cache_baseline_hit);
+        let verdict = apply_event(&mut state, event, &observation, config);
+        let alert = should_alert(&state, &verdict, config);
         let expected = (version != 0).then_some(version);
         match store::save_account(host, &state, expected).await {
             Ok(_) => {
                 let _ = store::touch_index(host, account_id, now_ms).await;
                 if alert {
-                    fire_alert(app, host, &state, &verdict).await;
+                    fire_alert(app, host, config, &state, &verdict).await;
                 }
                 return Ok(());
             }
@@ -127,16 +139,17 @@ async fn observe_inner(
 
 /// 发送告警并回写投递结果；通知失败会记录到投递明细与日志，不回滚判定。
 async fn fire_alert(
-    app: &App,
+    _app: &App,
     host: &HostClient,
+    config: &WatchConfig,
     state: &AccountState,
     verdict: &detector::Verdict,
 ) {
     let now_ms = state.last_observed_at_ms;
-    if !app.config.enabled {
+    if !config.enabled {
         return;
     }
-    let (title, detail) = render_alert(state, verdict, &app.config);
+    let (title, detail) = render_alert(state, verdict, config);
     let notice = Notice {
         title,
         detail,
@@ -144,7 +157,7 @@ async fn fire_alert(
         occurred_at_ms: now_ms,
         verdict: serde_json::to_value(verdict).unwrap_or_default(),
     };
-    let deliveries = deliver_all(host, &app.config, &notice).await;
+    let deliveries = deliver_all(host, config, &notice).await;
     // 没有任何渠道配置时也记录告警，管理页仍能看到事件。
     let mut updated = state.clone();
     updated.last_alert_at_ms = now_ms;
@@ -161,7 +174,7 @@ async fn fire_alert(
             })
             .collect(),
     });
-    updated.prune(now_ms, app.config.window_ms);
+    updated.prune(now_ms, config.window_ms);
     // 告警回写允许覆盖：同一观察链路上的告警只做一次，丢失不重复发送。
     let _ = store::save_account(host, &updated, None).await;
     for outcome in &deliveries {
@@ -212,10 +225,99 @@ async fn management_handle(
             }
             json_response(
                 200,
-                json!({"accounts": accounts, "config": app.config.redacted()}),
+                json!({
+                    "accounts": accounts,
+                    "config": effective_config(app, &call.host).await.redacted(),
+                }),
             )
         }
-        ("GET", "config") => json_response(200, app.config.redacted()),
+        ("GET", "config") => json_response(200, effective_config(app, &call.host).await.redacted()),
+        ("GET", "settings") => {
+            let settings = store::load_settings(&call.host)
+                .await
+                .ok()
+                .flatten()
+                .map(|(value, _)| value)
+                .unwrap_or_else(|| json!({}));
+            // 敏感值不回显，只回报是否已配置。
+            json_response(
+                200,
+                json!({
+                    "settings": {
+                        "webhook_url": settings.get("webhook_url").cloned().unwrap_or_default(),
+                        "webhook_format": settings.get("webhook_format").cloned().unwrap_or_default(),
+                        "webhook_auth_header_configured": settings
+                            .get("webhook_auth_header")
+                            .and_then(serde_json::Value::as_str)
+                            .is_some_and(|value| !value.is_empty()),
+                        "email_url": settings.get("email_url").cloned().unwrap_or_default(),
+                        "email_format": settings.get("email_format").cloned().unwrap_or_default(),
+                        "email_from": settings.get("email_from").cloned().unwrap_or_default(),
+                        "email_to": settings.get("email_to").cloned().unwrap_or_else(|| json!([])),
+                        "email_subject_template": settings
+                            .get("email_subject_template")
+                            .cloned()
+                            .unwrap_or_default(),
+                        "email_body_template": settings
+                            .get("email_body_template")
+                            .cloned()
+                            .unwrap_or_default(),
+                        "email_auth_header_configured": settings
+                            .get("email_auth_header")
+                            .and_then(serde_json::Value::as_str)
+                            .is_some_and(|value| !value.is_empty()),
+                        "alert_message": settings.get("alert_message").cloned().unwrap_or_default(),
+                    },
+                }),
+            )
+        }
+        ("POST", "settings") => {
+            let incoming: serde_json::Value =
+                serde_json::from_slice(&call.payload).unwrap_or_else(|_| json!({}));
+            // 未提交的敏感字段保留原值；clear_* 标记用于显式清空。
+            let mut settings = store::load_settings(&call.host)
+                .await
+                .ok()
+                .flatten()
+                .map(|(value, _)| value)
+                .unwrap_or_else(|| json!({}));
+            for key in [
+                "webhook_url",
+                "webhook_format",
+                "email_url",
+                "email_format",
+                "email_from",
+                "email_to",
+                "email_subject_template",
+                "email_body_template",
+                "alert_message",
+            ] {
+                if let Some(value) = incoming.get(key) {
+                    settings[key] = value.clone();
+                }
+            }
+            for (key, clear) in [
+                ("webhook_auth_header", "clear_webhook_auth"),
+                ("email_auth_header", "clear_email_auth"),
+            ] {
+                if let Some(value) = incoming.get(key).and_then(serde_json::Value::as_str)
+                    && !value.trim().is_empty()
+                {
+                    settings[key] = json!(value.trim());
+                }
+                if incoming
+                    .get(clear)
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false)
+                {
+                    settings[key] = json!("");
+                }
+            }
+            match store::save_settings(&call.host, &settings, None).await {
+                Ok(version) => json_response(200, json!({"ok": true, "version": version})),
+                Err(error) => json_response(500, json!({"ok": false, "error": error.message})),
+            }
+        }
         ("GET", "events") => {
             let account = query_param(&request.query, "account").unwrap_or_default();
             let events = match store::load_account_view(&call.host, &account).await {
@@ -245,7 +347,12 @@ async fn management_handle(
                     "last_signal_at_ms": 0,
                 }),
             };
-            let deliveries = deliver_all(&call.host, &app.config, &notice).await;
+            let deliveries = deliver_all(
+                &call.host,
+                &effective_config(app, &call.host).await,
+                &notice,
+            )
+            .await;
             let body = json!({
                 "ok": deliveries.iter().any(|item| item.ok),
                 "deliveries": deliveries.iter().map(|item| json!({
@@ -371,6 +478,18 @@ fn management_registration() -> ManagementRegistration {
                 method: "GET".to_owned(),
                 path: "alerts".to_owned(),
                 request_content_types: vec![],
+                response_content_types: vec!["application/json".to_owned()],
+            },
+            ManagementRoute {
+                method: "GET".to_owned(),
+                path: "settings".to_owned(),
+                request_content_types: vec![],
+                response_content_types: vec!["application/json".to_owned()],
+            },
+            ManagementRoute {
+                method: "POST".to_owned(),
+                path: "settings".to_owned(),
+                request_content_types: vec!["application/json".to_owned()],
                 response_content_types: vec!["application/json".to_owned()],
             },
             ManagementRoute {
