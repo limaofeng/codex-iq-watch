@@ -283,8 +283,8 @@ body {
 /* 设置弹窗分页与测试弹窗 */
 .settings-tabs {
   display: flex;
-  gap: 4px;
-  padding: 8px 16px 0;
+  gap: 2px;
+  padding: 6px 16px 0;
   border-bottom: 1px solid var(--border);
 }
 .settings-tabs button {
@@ -293,7 +293,7 @@ body {
   background: none;
   color: var(--text-secondary);
   font-size: 13px;
-  padding: 8px 14px;
+  padding: 8px 12px;
   cursor: pointer;
   border-bottom: 2px solid transparent;
   margin-bottom: -1px;
@@ -304,8 +304,12 @@ body {
   border-bottom-color: var(--info);
   font-weight: 600;
 }
-.modal-narrow { width: min(560px, calc(100vw - 32px)); }
-.form-section > .card-sub { margin-bottom: 10px; }
+.modal-narrow { width: min(620px, calc(100vw - 32px)); }
+.form-section > .card-sub { margin-bottom: 12px; }
+.field-check {
+  align-self: end;
+  min-height: 36px;
+}
 .question { margin-bottom: 12px; }
 .probe-result {
   margin-top: 12px;

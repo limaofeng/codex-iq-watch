@@ -15,7 +15,7 @@ pub enum Signal {
     Overload,
     /// 之前该账号缓存持续命中，本次大输入请求命中突然归零。
     CacheCollapse,
-    /// 整体耗时或首 token 耗时超过阈值。
+    /// 首 token 耗时超过阈值（降智的典型体感是迟迟不出字，而非整体慢）。
     SlowResponse,
 }
 
@@ -25,7 +25,7 @@ impl Signal {
         match self {
             Self::Overload => "上游容量类错误（502/503/529）",
             Self::CacheCollapse => "缓存命中骤降为零",
-            Self::SlowResponse => "响应耗时超过阈值",
+            Self::SlowResponse => "首 token 耗时超过阈值",
         }
     }
 }
@@ -228,7 +228,7 @@ pub fn extract_event(
     if is_cache_collapse(had_cache_hit, input_tokens, cached_tokens, config) {
         signals.push(Signal::CacheCollapse);
     }
-    if is_slow(latency_ms, first_token_ms, config) {
+    if is_slow(first_token_ms, config) {
         signals.push(Signal::SlowResponse);
     }
 
@@ -290,11 +290,11 @@ pub fn is_cache_collapse(
         && cached_tokens == Some(0)
 }
 
-/// 响应变慢：整体耗时或首 token 耗时超过阈值，只计入有该项事实的请求。
+/// 响应变慢：只看首 token 耗时——降智的典型体感是迟迟不出字，
+/// 整体耗时（含正常的长生成）不再计入，避免把慢回答误判成降智。
 #[must_use]
-pub fn is_slow(latency_ms: Option<u64>, first_token_ms: Option<u64>, config: &WatchConfig) -> bool {
-    latency_ms.is_some_and(|value| value >= config.latency_ms)
-        || first_token_ms.is_some_and(|value| value >= config.first_token_ms)
+pub fn is_slow(first_token_ms: Option<u64>, config: &WatchConfig) -> bool {
+    first_token_ms.is_some_and(|value| value >= config.first_token_ms)
 }
 
 /// 对窗口内事件做判定：带信号请求数与信号种类同时达标才算降智结论。
@@ -435,10 +435,10 @@ mod tests {
     #[test]
     fn slow_response_threshold() {
         let config = config();
-        assert!(is_slow(Some(10_001), None, &config));
-        assert!(is_slow(None, Some(10_001), &config));
-        assert!(!is_slow(Some(9_999), Some(9_999), &config));
-        assert!(!is_slow(None, None, &config));
+        // 只看首 token 耗时：整体耗时再高也不计入。
+        assert!(is_slow(Some(10_001), &config));
+        assert!(!is_slow(Some(9_999), &config));
+        assert!(!is_slow(None, &config));
     }
 
     fn event(at_ms: u64, signals: &[Signal]) -> RequestEvent {

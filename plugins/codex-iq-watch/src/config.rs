@@ -139,6 +139,47 @@ impl WatchConfig {
                 .map(str::to_owned)
                 .collect();
         }
+        // 检测参数同样允许页面覆盖；越界值由 `normalized()` 收口。
+        if let Some(value) = settings.get("enabled").and_then(Value::as_bool) {
+            self.enabled = value;
+        }
+        if let Some(providers) = settings.get("watch_providers").and_then(Value::as_array) {
+            self.watch_providers = providers
+                .iter()
+                .filter_map(|item| item.as_str())
+                .map(str::trim)
+                .filter(|item| !item.is_empty())
+                .take(16)
+                .map(str::to_owned)
+                .collect();
+        }
+        if let Some(value) = settings.get("window_ms").and_then(Value::as_u64) {
+            self.window_ms = value;
+        }
+        if let Some(value) = settings.get("cooldown_ms").and_then(Value::as_u64) {
+            self.cooldown_ms = value;
+        }
+        if let Some(value) = settings.get("first_token_ms").and_then(Value::as_u64) {
+            self.first_token_ms = value;
+        }
+        if let Some(value) = settings
+            .get("cache_min_input_tokens")
+            .and_then(Value::as_u64)
+        {
+            self.cache_min_input_tokens = value;
+        }
+        if let Some(value) = settings
+            .get("min_signaled_requests")
+            .and_then(Value::as_u64)
+        {
+            self.min_signaled_requests = value as u32;
+        }
+        if let Some(value) = settings.get("min_signal_kinds").and_then(Value::as_u64) {
+            self.min_signal_kinds = value as u32;
+        }
+        if let Some(value) = settings.get("consecutive_triggers").and_then(Value::as_u64) {
+            self.consecutive_triggers = value as u32;
+        }
     }
 
     /// 把 `Header-Name: value` 形式的敏感配置解析为头对；格式不合法时不发送。

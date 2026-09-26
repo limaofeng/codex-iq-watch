@@ -12,7 +12,6 @@
   var detailSub = document.getElementById('detail-sub');
   var eventsBody = document.getElementById('events-body');
   var alertsBody = document.getElementById('alerts-body');
-  var configBody = document.getElementById('config-body');
   var toast = document.getElementById('toast');
   var testBtn = document.getElementById('test-btn');
   var refreshBtn = document.getElementById('refresh-btn');
@@ -28,6 +27,7 @@
   var testCloseBtn = document.getElementById('test-close');
   var testAccountName = document.getElementById('test-account-name');
   var testAccountSelect = document.getElementById('test-account');
+  var testKey = document.getElementById('test-key');
   var testModel = document.getElementById('test-model');
   var testEffort = document.getElementById('test-effort');
   var testModelsHint = document.getElementById('test-models-hint');
@@ -35,6 +35,9 @@
   var testResult = document.getElementById('test-result');
   var testAllBtn = document.getElementById('test-all-btn');
   var lastAccounts = [];
+  var lastModels = { keys: [], models: [] };
+  var PREFERRED_MODEL = 'gpt-6-astra';
+  var PREFERRED_EFFORT = 'low';
 
   var STATUS_LABELS = {
     unknown: '未知',
@@ -45,7 +48,7 @@
   };
 
   /* 测试可选 reasoning effort；default 表示不指定，交回宿主默认。 */
-  var EFFORTS = ['default', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+  var EFFORTS = ['default', 'low', 'medium', 'high', 'xhigh', 'max'];
 
   var OUTCOME_LABELS = {
     succeeded: '成功',
@@ -188,30 +191,10 @@
     }).join('');
   }
 
-  function renderConfig(config) {
-    var items = [
-      ['启用通知', config.enabled ? '是' : '否'],
-      ['监控 Provider', (config.watch_providers || []).join(', ') || '全部'],
-      ['统计窗口', Math.round((config.window_ms || 0) / 60000) + ' 分钟'],
-      ['告警条件', '≥' + config.min_signaled_requests + ' 个信号请求且 ≥' + config.min_signal_kinds + ' 种信号，连续 ' + config.consecutive_triggers + ' 次'],
-      ['冷却时间', Math.round((config.cooldown_ms || 0) / 60000) + ' 分钟'],
-      ['慢响应阈值', (config.latency_ms || 0) / 1000 + 's / 首 token ' + (config.first_token_ms || 0) / 1000 + 's'],
-      ['缓存判定输入下限', formatTokens(config.cache_min_input_tokens) + ' tokens'],
-      ['Webhook', config.webhook_url ? config.webhook_url : '未配置'],
-      ['Webhook 格式', config.webhook_format || 'generic'],
-      ['邮件', config.email_url ? config.email_url : '未配置'],
-      ['邮件格式', config.email_format || 'generic'],
-      ['收件人', (config.email_to || []).join(', ') || '未配置'],
-    ];
-    configBody.innerHTML = items.map(function (item) {
-      return '<div><dt>' + esc(item[0]) + '</dt><dd>' + esc(item[1]) + '</dd></div>';
-    }).join('');
-  }
-
   function renderEvents(events) {
     var list = (events || []).slice().reverse();
     if (!list.length) {
-      eventsBody.innerHTML = '<tr><td colspan="6" class="empty">暂无信号记录</td></tr>';
+      eventsBody.innerHTML = '<tr><td colspan="7" class="empty">暂无信号记录</td></tr>';
       return;
     }
     eventsBody.innerHTML = list.map(function (event) {
@@ -221,6 +204,7 @@
       var cache = (event.cached_tokens == null ? '—' : formatTokens(event.cached_tokens))
         + ' / ' + (event.input_tokens == null ? '—' : formatTokens(event.input_tokens));
       var latency = event.latency_ms != null ? (event.latency_ms / 1000).toFixed(1) + 's' : '—';
+      var firstToken = event.first_token_ms != null ? (event.first_token_ms / 1000).toFixed(1) + 's' : '—';
       return '<tr>'
         + '<td>' + esc(formatMs(event.observed_at_ms)) + '</td>'
         + '<td>' + esc(OUTCOME_LABELS[event.outcome] || event.outcome) + '</td>'
@@ -228,6 +212,7 @@
         + '<td>' + esc(event.upstream_status || event.client_status || '—') + '</td>'
         + '<td>' + esc(cache) + '</td>'
         + '<td>' + esc(latency) + '</td>'
+        + '<td>' + esc(firstToken) + '</td>'
         + '</tr>';
     }).join('');
   }
@@ -260,7 +245,6 @@
       renderAccounts(data.accounts || []);
       lastAccounts = data.accounts || [];
       renderHistory(data.alerts || []);
-      renderConfig(data.config || {});
       var total = (data.accounts || []).length;
       var degraded = (data.accounts || []).filter(function (a) { return a.status === 'degraded'; }).length;
       var observed = (data.accounts || []).filter(function (a) { return a.status !== 'unobserved'; }).length;
@@ -282,7 +266,7 @@
     detailSub.textContent = (label && label !== accountId)
       ? (label + '（' + accountId + '）')
       : accountId;
-    eventsBody.innerHTML = '<tr><td colspan="6" class="empty">正在加载…</td></tr>';
+    eventsBody.innerHTML = '<tr><td colspan="7" class="empty">正在加载…</td></tr>';
     alertsBody.innerHTML = '<tr><td colspan="3" class="empty">正在加载…</td></tr>';
     var query = 'account=' + encodeURIComponent(accountId);
     Promise.all([
@@ -292,7 +276,7 @@
       renderEvents(results[0].events || []);
       renderAlerts(results[1].alerts || []);
     }).catch(function (error) {
-      eventsBody.innerHTML = '<tr><td colspan="6" class="empty">加载失败：' + esc(error.message) + '</td></tr>';
+      eventsBody.innerHTML = '<tr><td colspan="7" class="empty">加载失败：' + esc(error.message) + '</td></tr>';
       alertsBody.innerHTML = '<tr><td colspan="3" class="empty">加载失败</td></tr>';
     });
   }
@@ -385,28 +369,61 @@
         return '<option value="' + value + '">'
           + (value === 'default' ? 'default（不指定）' : value) + '</option>';
       }).join('');
+      testEffort.value = PREFERRED_EFFORT;
     }
-    testModelsHint.textContent = '正在加载模型…';
+    testModelsHint.textContent = '正在加载 Key 与模型…';
     testModel.disabled = true;
     request({ method: 'GET', path: 'models' }).then(function (data) {
-      var models = data.models || [];
-      if (!models.length) {
-        testModelsHint.textContent = data.error || '没有可用模型；请先在宿主配置客户端 Key 与账号';
-        return;
-      }
-      testModel.innerHTML = models.map(function (item) {
-        return '<option value="' + esc(item.model) + '" data-key="' + esc(item.key) + '">'
-          + esc(item.model) + '</option>';
-      }).join('');
-      testModel.disabled = false;
-      testModelsHint.textContent = '共 ' + models.length + ' 个模型；测试借用第一个可见 Key 的身份发送';
+      lastModels = data;
+      fillKeys();
+      fillModels();
     }).catch(function (error) {
       testModelsHint.textContent = '模型加载失败：' + error.message;
     });
   }
 
+  function fillKeys() {
+    var keys = (lastModels && lastModels.keys) || [];
+    if (!keys.length) {
+      testKey.innerHTML = '<option value="">（自动：第一个可见 Key）</option>';
+      return;
+    }
+    testKey.innerHTML = keys.map(function (key) {
+      return '<option value="' + esc(key.id) + '">' + esc(key.name || key.id)
+        + '（' + (key.models || []).length + ' 个模型）</option>';
+    }).join('');
+    // 默认选中含偏好模型的 Key，便于直接用 gpt-6-astra。
+    var prefer = keys.filter(function (key) {
+      return (key.models || []).indexOf(PREFERRED_MODEL) !== -1;
+    })[0] || keys[0];
+    testKey.value = prefer.id;
+  }
+
+  testKey.addEventListener('change', function () { fillModels(); });
+
+  function fillModels(preferModel) {
+    var keys = (lastModels && lastModels.keys) || [];
+    var fallback = (lastModels && lastModels.models) || [];
+    var key = keys.filter(function (item) { return item.id === testKey.value; })[0];
+    var names = key ? (key.models || [])
+      : Array.from(new Set(fallback.map(function (item) { return item.model; })));
+    if (!names.length) {
+      testModel.innerHTML = '<option value="">没有可用模型</option>';
+      testModel.disabled = true;
+      testModelsHint.textContent = (lastModels && lastModels.error)
+        || '没有可用模型；请先在宿主配置客户端 Key 与账号';
+      return;
+    }
+    testModel.innerHTML = names.map(function (name) {
+      return '<option value="' + esc(name) + '">' + esc(name) + '</option>';
+    }).join('');
+    var want = preferModel || PREFERRED_MODEL;
+    testModel.value = names.indexOf(want) !== -1 ? want : names[0];
+    testModel.disabled = false;
+    testModelsHint.textContent = '经所选 Key 发送；模型范围为该 Key 可见列表';
+  }
+
   function runTest() {
-    var option = testModel.selectedOptions && testModel.selectedOptions[0];
     var model = testModel.value;
     var account = testAccountSelect.value;
     if (!account) {
@@ -417,7 +434,7 @@
       testResult.innerHTML = '<span class="fail">请先选择模型</span>';
       return;
     }
-    var key = option ? option.getAttribute('data-key') : '';
+    var key = testKey.value;
     var effort = testEffort.value;
     var effortHint = effort && effort !== 'default' ? '（effort=' + esc(effort) + '）' : '';
     testSend.disabled = true;
@@ -467,6 +484,7 @@
     request({ method: 'GET', path: 'settings' }).then(function (data) {
       var settings = data.settings || {};
       fillSettings(settings);
+      fillDetect(data.effective || {});
       settingsHint.textContent = '认证头不回显；其余字段保存后立即生效，覆盖宿主配置中的同名项。';
     }).catch(function (error) {
       settingsHint.className = 'form-hint fail';
@@ -494,6 +512,47 @@
     field('f-alert-message').value = settings.alert_message || '';
   }
 
+  /* 检测参数按生效值回填；单位换算：ms → 分钟/秒。 */
+  function fillDetect(effective) {
+    field('f-enabled').checked = effective.enabled !== false;
+    field('f-watch-providers').value = (effective.watch_providers || []).join(', ');
+    field('f-window-min').value = effective.window_ms ? Math.round(effective.window_ms / 60000) : '';
+    field('f-cooldown-min').value = effective.cooldown_ms ? Math.round(effective.cooldown_ms / 60000) : '';
+    field('f-first-token-s').value = effective.first_token_ms ? (effective.first_token_ms / 1000) : '';
+    field('f-cache-min-input').value = effective.cache_min_input_tokens != null
+      ? effective.cache_min_input_tokens : '';
+    field('f-min-signaled').value = effective.min_signaled_requests != null
+      ? effective.min_signaled_requests : '';
+    field('f-min-kinds').value = effective.min_signal_kinds != null
+      ? effective.min_signal_kinds : '';
+    field('f-consecutive').value = effective.consecutive_triggers != null
+      ? effective.consecutive_triggers : '';
+  }
+
+  /* 数值字段：留空 → null（清除覆盖回宿主配置），有值 → 换算回毫秒/原始单位。 */
+  function detectPayload() {
+    var providers = read('f-watch-providers');
+    function num(id, factor) {
+      var value = read(id);
+      if (!value) return null;
+      var parsed = Number(value);
+      return Number.isFinite(parsed) ? Math.round(parsed * factor) : null;
+    }
+    return {
+      enabled: field('f-enabled').checked,
+      watch_providers: providers
+        ? providers.split(/[,\n]/).map(function (item) { return item.trim(); }).filter(Boolean)
+        : [],
+      window_ms: num('f-window-min', 60000),
+      cooldown_ms: num('f-cooldown-min', 60000),
+      first_token_ms: num('f-first-token-s', 1000),
+      cache_min_input_tokens: num('f-cache-min-input', 1),
+      min_signaled_requests: num('f-min-signaled', 1),
+      min_signal_kinds: num('f-min-kinds', 1),
+      consecutive_triggers: num('f-consecutive', 1),
+    };
+  }
+
   function saveSettings() {
     var to = read('f-email-to');
     var payload = {
@@ -511,6 +570,8 @@
       clear_email_auth: field('f-email-auth-clear').checked,
       alert_message: read('f-alert-message'),
     };
+    var detect = detectPayload();
+    Object.keys(detect).forEach(function (key) { payload[key] = detect[key]; });
     saveBtn.disabled = true;
     settingsHint.className = 'form-hint';
     settingsHint.textContent = '正在保存…';

@@ -3,8 +3,8 @@
   "name": "codex-iq-watch",
   "displayName": "Codex 降智监控",
   "publisher": "xunzhimeng",
-  "version": "0.1.7",
-  "description": "按账号观察上游过载、缓存命中骤降与响应变慢等降智信号，持续命中时通过 Webhook 或邮件 HTTP API 告警。",
+  "version": "0.1.8",
+  "description": "按账号观察上游过载、缓存命中骤降与首 token 变慢等降智信号，持续命中时通过 Webhook 或邮件 HTTP API 告警。",
   "license": "MIT",
   "author": "xunzhimeng",
   "engines": {
@@ -84,14 +84,14 @@
         "minimum": 1000,
         "maximum": 600000,
         "default": 10000,
-        "description": "整体耗时超过该值记为响应变慢信号"
+        "description": "（已废弃，仅兼容旧配置）整体耗时阈值；慢响应只看首 token 耗时"
       },
       "first_token_ms": {
         "type": "integer",
         "minimum": 1000,
         "maximum": 600000,
         "default": 10000,
-        "description": "首 token 耗时超过该值记为响应变慢信号"
+        "description": "首 token 耗时超过该值记为响应变慢信号；慢响应只看首 token"
       },
       "cache_min_input_tokens": {
         "type": "integer",

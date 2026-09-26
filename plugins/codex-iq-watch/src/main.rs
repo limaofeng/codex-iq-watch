@@ -368,26 +368,37 @@ async fn management_handle(
             }
         }
         ("GET", "models") => {
-            // 汇总所有启用 Key 可见的模型；同一名称去重，取第一个可见 Key。
+            // 汇总所有启用 Key 可见的模型；同时返回 Key 列表供管理页选择。
             let Ok(keys) = store::list_client_keys(&call.host).await else {
                 return json_response(
                     200,
-                    json!({"models": [], "error": "无法读取客户端 Key 列表（需要 models 权限）"}),
+                    json!({"models": [], "keys": [], "error": "无法读取客户端 Key 列表（需要 models 权限）"}),
                 );
             };
             let mut models = Vec::<serde_json::Value>::new();
+            let mut key_list = Vec::<serde_json::Value>::new();
             let mut seen = std::collections::BTreeSet::new();
             for key in keys.iter().filter(|key| key.enabled) {
                 let Ok(names) = store::list_models(&call.host, &key.id).await else {
                     continue;
                 };
+                let display = if key.name.trim().is_empty() {
+                    key.id.clone()
+                } else {
+                    key.name.clone()
+                };
+                key_list.push(json!({
+                    "id": key.id,
+                    "name": display,
+                    "models": names,
+                }));
                 for name in names {
                     if seen.insert(name.clone()) {
                         models.push(json!({"model": name, "key": key.id}));
                     }
                 }
             }
-            json_response(200, json!({"models": models}))
+            json_response(200, json!({"models": models, "keys": key_list}))
         }
         ("POST", "candy-test") => {
             let incoming: serde_json::Value =
@@ -430,7 +441,8 @@ async fn management_handle(
                 .flatten()
                 .map(|(value, _)| value)
                 .unwrap_or_else(|| json!({}));
-            // 敏感值不回显，只回报是否已配置。
+            // 敏感值不回显，只回报是否已配置；检测参数回填生效值供编辑。
+            let effective = effective_config(app, &call.host).await;
             json_response(
                 200,
                 json!({
@@ -459,6 +471,7 @@ async fn management_handle(
                             .is_some_and(|value| !value.is_empty()),
                         "alert_message": settings.get("alert_message").cloned().unwrap_or_default(),
                     },
+                    "effective": effective.redacted(),
                 }),
             )
         }
@@ -485,6 +498,30 @@ async fn management_handle(
             ] {
                 if let Some(value) = incoming.get(key) {
                     settings[key] = value.clone();
+                }
+            }
+            // 检测参数覆盖：JSON null 表示清除覆盖、回到宿主配置。
+            for key in [
+                "enabled",
+                "watch_providers",
+                "window_ms",
+                "cooldown_ms",
+                "first_token_ms",
+                "cache_min_input_tokens",
+                "min_signaled_requests",
+                "min_signal_kinds",
+                "consecutive_triggers",
+            ] {
+                match incoming.get(key) {
+                    Some(serde_json::Value::Null) => {
+                        if let Some(map) = settings.as_object_mut() {
+                            map.remove(key);
+                        }
+                    }
+                    Some(value) => {
+                        settings[key] = value.clone();
+                    }
+                    None => {}
                 }
             }
             for (key, clear) in [
