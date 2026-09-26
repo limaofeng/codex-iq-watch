@@ -245,47 +245,95 @@ async fn management_handle(
     let request = call.request;
     match (request.method.as_str(), request.path.as_str()) {
         ("GET", "status") => {
-            // 管理阶段可列账号投影，用最新 name/email 覆盖存储里的显示名（改名后即时生效）。
-            let runtime = store::list_runtime_accounts(&call.host)
-                .await
-                .unwrap_or_default();
+            // 账号列表以宿主账号全集为基底（不依赖历史索引，索引曾为空导致列表不可见），
+            // 观察到的窗口状态与告警叠加其上；name/email 用最新投影覆盖存储值。
+            let (runtime, accounts_error) = match store::list_runtime_accounts(&call.host).await {
+                Ok(accounts) => (accounts, serde_json::Value::Null),
+                Err(error) => (
+                    std::collections::BTreeMap::new(),
+                    json!(format!(
+                        "无法列举宿主账号（{}），仅显示已观察到的账号",
+                        error.message
+                    )),
+                ),
+            };
             let index = store::load_index(&call.host).await.unwrap_or_default();
-            let mut accounts = Vec::new();
-            let mut alerts = Vec::new();
+            let mut states = std::collections::BTreeMap::new();
             for item in index {
                 let Some(id) = item.get("account_id").and_then(|id| id.as_str()) else {
                     continue;
                 };
-                let Ok(Some((state, _))) = store::load_account(&call.host, id).await else {
-                    continue;
-                };
-                let name = runtime
-                    .get(id)
-                    .and_then(store::runtime_label)
-                    .or(state.display_name.clone());
-                accounts.push(json!({
-                    "account_id": state.account_id,
-                    "name": name,
-                    "provider": state.provider,
-                    "model": state.model,
-                    "status": status_label(state.status),
-                    "verdict_streak": state.verdict_streak,
-                    "last_observed_at_ms": state.last_observed_at_ms,
-                    "last_alert_at_ms": state.last_alert_at_ms,
-                    "window_events": state.events.len(),
-                    "signaled_events": state.events.iter().filter(|event| !event.signals.is_empty()).count(),
-                    "last_probe": state.last_probe,
-                }));
-                for alert in &state.alerts {
-                    alerts.push(json!({
-                        "account_id": state.account_id,
-                        "name": name,
-                        "at_ms": alert.at_ms,
-                        "verdict": alert.verdict,
-                        "deliveries": alert.deliveries,
-                    }));
+                if let Ok(Some((state, _))) = store::load_account(&call.host, id).await {
+                    states.insert(id.to_owned(), state);
                 }
             }
+            let mut ids: Vec<String> = runtime.keys().cloned().collect();
+            for id in states.keys() {
+                if !runtime.contains_key(id) {
+                    ids.push(id.clone());
+                }
+            }
+            let mut accounts = Vec::new();
+            let mut alerts = Vec::new();
+            for id in ids {
+                let name = runtime
+                    .get(&id)
+                    .and_then(store::runtime_label)
+                    .or_else(|| states.get(&id).and_then(|state| state.display_name.clone()));
+                let (status, state) = match states.get(&id) {
+                    Some(state) => (status_label(state.status), Some(state)),
+                    None => ("unobserved", None),
+                };
+                let enabled = runtime.get(&id).map(|account| account.enabled);
+                accounts.push(json!({
+                    "account_id": id,
+                    "name": name,
+                    "provider": state.and_then(|s| s.provider.clone())
+                        .or_else(|| runtime.get(&id).map(|a| a.provider_id.clone())),
+                    "model": state.and_then(|s| s.model.clone()),
+                    "status": status,
+                    "enabled": enabled,
+                    "verdict_streak": state.map_or(0, |s| s.verdict_streak),
+                    "last_observed_at_ms": state.map_or(0, |s| s.last_observed_at_ms),
+                    "last_alert_at_ms": state.map_or(0, |s| s.last_alert_at_ms),
+                    "window_events": state.map_or(0, |s| s.events.len()),
+                    "signaled_events": state.map_or(0, |s| s.events.iter().filter(|e| !e.signals.is_empty()).count()),
+                    "last_probe": state.and_then(|s| s.last_probe.clone()),
+                }));
+                if let Some(state) = state {
+                    for alert in &state.alerts {
+                        alerts.push(json!({
+                            "account_id": state.account_id,
+                            "name": name,
+                            "at_ms": alert.at_ms,
+                            "verdict": alert.verdict,
+                            "deliveries": alert.deliveries,
+                        }));
+                    }
+                }
+            }
+            // 严重程度优先，其次最近观察时间，便于一眼定位问题账号。
+            accounts.sort_by(|left, right| {
+                let rank = |item: &serde_json::Value| match item
+                    .get("status")
+                    .and_then(serde_json::Value::as_str)
+                {
+                    Some("degraded") => 0,
+                    Some("suspect") => 1,
+                    Some("healthy") => 2,
+                    _ => 3,
+                };
+                rank(left).cmp(&rank(right)).then_with(|| {
+                    right
+                        .get("last_observed_at_ms")
+                        .and_then(serde_json::Value::as_u64)
+                        .cmp(
+                            &left
+                                .get("last_observed_at_ms")
+                                .and_then(serde_json::Value::as_u64),
+                        )
+                })
+            });
             alerts.sort_by_key(|item| {
                 item.get("at_ms")
                     .and_then(serde_json::Value::as_u64)
@@ -296,6 +344,7 @@ async fn management_handle(
                 json!({
                     "accounts": accounts,
                     "alerts": alerts,
+                    "accounts_error": accounts_error,
                     "config": effective_config(app, &call.host).await.redacted(),
                 }),
             )

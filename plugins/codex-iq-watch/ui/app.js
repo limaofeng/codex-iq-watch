@@ -27,17 +27,20 @@
   var testModal = document.getElementById('test-modal');
   var testCloseBtn = document.getElementById('test-close');
   var testAccountName = document.getElementById('test-account-name');
+  var testAccountSelect = document.getElementById('test-account');
   var testModel = document.getElementById('test-model');
   var testModelsHint = document.getElementById('test-models-hint');
   var testSend = document.getElementById('test-send');
   var testResult = document.getElementById('test-result');
-  var testAccount = '';
+  var testAllBtn = document.getElementById('test-all-btn');
+  var lastAccounts = [];
 
   var STATUS_LABELS = {
     unknown: '未知',
     healthy: '正常',
     suspect: '疑似',
     degraded: '降智',
+    unobserved: '未观察',
   };
 
   var OUTCOME_LABELS = {
@@ -126,7 +129,8 @@
         + '<td>' + accountLabel(account) + '</td>'
         + '<td>' + esc(account.provider || '—') + '</td>'
         + '<td>' + esc(account.model || '—') + '</td>'
-        + '<td><span class="tag ' + cls + '">' + esc(status) + '</span></td>'
+        + '<td><span class="tag ' + cls + '">' + esc(status) + '</span>'
+        + (account.enabled === false ? '<span class="tag">停用</span>' : '') + '</td>'
         + '<td>' + (account.signaled_events || 0) + ' / ' + (account.window_events || 0) + '</td>'
         + '<td>' + esc(formatMs(account.last_observed_at_ms)) + '</td>'
         + '<td>' + esc(account.last_alert_at_ms ? formatMs(account.last_alert_at_ms) : '—') + '</td>'
@@ -250,13 +254,18 @@
     statusSub.textContent = '正在加载…';
     request({ method: 'GET', path: 'status' }).then(function (data) {
       renderAccounts(data.accounts || []);
+      lastAccounts = data.accounts || [];
       renderHistory(data.alerts || []);
       renderConfig(data.config || {});
       var total = (data.accounts || []).length;
       var degraded = (data.accounts || []).filter(function (a) { return a.status === 'degraded'; }).length;
+      var observed = (data.accounts || []).filter(function (a) { return a.status !== 'unobserved'; }).length;
       statusSub.textContent = total
-        ? ('共 ' + total + ' 个账号，' + degraded + ' 个降智；观察窗口内持续判定')
-        : '暂无账号观察数据；插件在后台持续统计请求终态';
+        ? ('共 ' + total + ' 个账号（' + observed + ' 个已观察），' + degraded + ' 个降智')
+        : '暂无账号；插件在后台持续统计请求终态';
+      if (data.accounts_error) {
+        statusSub.textContent += '；' + data.accounts_error;
+      }
     }).catch(function (error) {
       statusSub.textContent = '加载失败：' + error.message;
     });
@@ -319,15 +328,47 @@
   }
 
   function openTest(accountId, label) {
-    if (!accountId) return;
-    testAccount = accountId;
-    testAccountName.textContent = (label && label !== accountId)
-      ? (label + '（' + accountId + '）')
-      : accountId;
     testResult.innerHTML = '<span class="muted">尚未发送</span>';
     testModal.hidden = false;
+    fillTestAccounts(lastAccounts, accountId);
+    if (!lastAccounts.length) {
+      // 页面尚未加载账号时兜底拉一次，确保任意时刻都能测试。
+      request({ method: 'GET', path: 'status' }).then(function (data) {
+        lastAccounts = data.accounts || [];
+        fillTestAccounts(lastAccounts, accountId);
+      });
+    }
+    var current = lastAccounts.filter(function (a) { return a.account_id === testAccountSelect.value; })[0];
+    testAccountName.textContent = current
+      ? ((current.name || current.account_id) + '（' + current.account_id + '）')
+      : (label || '选择账号');
     loadModels();
   }
+
+  function fillTestAccounts(accounts, preferId) {
+    var options = (accounts || []).map(function (account) {
+      var label = account.name || account.account_id;
+      var suffix = account.status && STATUS_LABELS[account.status]
+        ? ' · ' + STATUS_LABELS[account.status] : '';
+      return '<option value="' + esc(account.account_id) + '">' + esc(label + suffix) + '</option>';
+    });
+    if (!options.length) {
+      testAccountSelect.innerHTML = '<option value="">没有可选账号</option>';
+      testAccountName.textContent = '没有可选账号';
+      return;
+    }
+    testAccountSelect.innerHTML = options.join('');
+    if (preferId) {
+      testAccountSelect.value = preferId;
+    }
+  }
+
+  testAccountSelect.addEventListener('change', function () {
+    var current = lastAccounts.filter(function (a) { return a.account_id === testAccountSelect.value; })[0];
+    testAccountName.textContent = current
+      ? ((current.name || current.account_id) + '（' + current.account_id + '）')
+      : testAccountSelect.value;
+  });
 
   function closeTest() {
     testModal.hidden = true;
@@ -356,6 +397,11 @@
   function runTest() {
     var option = testModel.selectedOptions && testModel.selectedOptions[0];
     var model = testModel.value;
+    var account = testAccountSelect.value;
+    if (!account) {
+      testResult.innerHTML = '<span class="fail">请先选择账号</span>';
+      return;
+    }
     if (!model) {
       testResult.innerHTML = '<span class="fail">请先选择模型</span>';
       return;
@@ -367,7 +413,7 @@
       method: 'POST',
       path: 'candy-test',
       contentType: 'application/json',
-      body: JSON.stringify({ account: testAccount, model: model, key: key }),
+      body: JSON.stringify({ account: account, model: model, key: key }),
     }).then(function (data) {
       var cls = data.result === 'correct' ? 'ok' : 'fail';
       var label = data.result === 'correct' ? '答对 ✓' : (data.result === 'wrong' ? '答错 ✗' : '调用失败');
@@ -507,6 +553,7 @@
     }
   });
   testSend.addEventListener('click', runTest);
+  testAllBtn.addEventListener('click', function () { openTest('', ''); });
   resetBtn.addEventListener('click', function () {
     if (!window.confirm('恢复默认将删除本页保存的全部通知设置（含认证头），改回宿主配置。继续吗？')) {
       return;

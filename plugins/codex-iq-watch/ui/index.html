@@ -16,6 +16,7 @@
         </div>
         <div class="actions">
           <button class="btn" id="refresh-btn" type="button">刷新</button>
+          <button class="btn" id="test-all-btn" type="button">糖果题测试</button>
           <button class="btn" id="open-settings" type="button">通知设置</button>
           <button class="btn primary" id="test-btn" type="button">发送测试通知</button>
         </div>
@@ -214,8 +215,12 @@
           <button class="btn link modal-close" id="test-close" type="button" aria-label="关闭">✕</button>
         </header>
         <div class="modal-body">
-          <p class="card-sub question">向该账号发送一道推理题（摸糖果保证数量，正确答案 21），用宿主嵌套模型调用、不占外部额度；模型答错或无输出可视为疑似降智的经验信号。</p>
+          <p class="card-sub question">向所选账号发送一道推理题（摸糖果保证数量，正确答案 21），用宿主嵌套模型调用、不占外部额度；模型答错或无输出可视为疑似降智的经验信号。</p>
           <div class="form-grid">
+            <label class="field">
+              <span>账号</span>
+              <select id="test-account"></select>
+            </label>
             <label class="field">
               <span>模型</span>
               <select id="test-model" disabled><option>加载中…</option></select>
