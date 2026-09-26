@@ -54,16 +54,82 @@ async fn deliver_webhook(
         &body,
     )
     .await
-    .map(|status| DeliveryOutcome {
-        channel: "webhook".to_owned(),
-        ok: (200..300).contains(&status),
-        detail: format!("HTTP {status}"),
+    .map(|(status, response)| {
+        // 企微/钉钉/飞书在 HTTP 200 下也用 errcode/code 表示失败，仅看状态码会误报成功。
+        let (ok, detail) = match config.webhook_format {
+            WebhookFormat::Wecom | WebhookFormat::Dingtalk => {
+                check_errcode(status, &response, "errcode")
+            }
+            WebhookFormat::Feishu => check_feishu(status, &response),
+            _ => status_outcome(status, &response),
+        };
+        DeliveryOutcome {
+            channel: "webhook".to_owned(),
+            ok,
+            detail,
+        }
     })
     .unwrap_or_else(|error| DeliveryOutcome {
         channel: "webhook".to_owned(),
         ok: false,
         detail: error.message.clone(),
     })
+}
+
+/// HTTP 状态码与响应摘录组成的判定；失败时保留目标方返回的前 200 字符便于定位。
+fn status_outcome(status: u16, body: &[u8]) -> (bool, String) {
+    if (200..300).contains(&status) {
+        (true, format!("HTTP {status}"))
+    } else {
+        (false, format!("HTTP {status}: {}", body_excerpt(body)))
+    }
+}
+
+/// 企微／钉钉风格：`errcode` 为 0 才算成功；响应不是 JSON 时退回状态码判定。
+fn check_errcode(status: u16, body: &[u8], field: &str) -> (bool, String) {
+    let Ok(value) = serde_json::from_slice::<Value>(body) else {
+        return status_outcome(status, body);
+    };
+    match value.get(field).and_then(Value::as_i64) {
+        Some(0) => (true, format!("HTTP {status}")),
+        Some(code) => {
+            let message = value
+                .get("errmsg")
+                .or_else(|| value.get("msg"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            (false, format!("HTTP {status}: {field} {code} {message}"))
+        }
+        None => status_outcome(status, body),
+    }
+}
+
+/// 飞书机器人用 `code`（新格式）或 `StatusCode`（旧格式）字段。
+fn check_feishu(status: u16, body: &[u8]) -> (bool, String) {
+    let Ok(value) = serde_json::from_slice::<Value>(body) else {
+        return status_outcome(status, body);
+    };
+    let code = value
+        .get("code")
+        .or_else(|| value.get("StatusCode"))
+        .and_then(Value::as_i64);
+    match code {
+        Some(0) => (true, format!("HTTP {status}")),
+        Some(code) => {
+            let message = value
+                .get("msg")
+                .or_else(|| value.get("error"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            (false, format!("HTTP {status}: code {code} {message}"))
+        }
+        None => status_outcome(status, body),
+    }
+}
+
+fn body_excerpt(body: &[u8]) -> String {
+    let text = String::from_utf8_lossy(body);
+    text.chars().take(200).collect()
 }
 
 async fn deliver_email(
@@ -75,10 +141,13 @@ async fn deliver_email(
     let body = email_body(config, notice, &subject);
     send(host, &config.email_url, &config.email_auth_header, &body)
         .await
-        .map(|status| DeliveryOutcome {
-            channel: "email".to_owned(),
-            ok: (200..300).contains(&status),
-            detail: format!("HTTP {status}"),
+        .map(|(status, response)| {
+            let (ok, detail) = status_outcome(status, &response);
+            DeliveryOutcome {
+                channel: "email".to_owned(),
+                ok,
+                detail,
+            }
         })
         .unwrap_or_else(|error| DeliveryOutcome {
             channel: "email".to_owned(),
@@ -92,7 +161,7 @@ async fn send(
     url: &str,
     auth_header: &str,
     body: &Value,
-) -> Result<u16, PluginFault> {
+) -> Result<(u16, Vec<u8>), PluginFault> {
     let mut headers = vec![
         ("content-type".to_owned(), "application/json".to_owned()),
         ("accept".to_owned(), "*/*".to_owned()),
@@ -117,7 +186,7 @@ async fn send(
         .map_err(|error| error.into_plugin_fault())?;
     let response: HttpResponse = serde_json::from_value(reply.result)
         .map_err(|_| PluginFault::new(ErrorCode::Fault, "host http reply is invalid"))?;
-    Ok(response.status)
+    Ok((response.status, reply.payload))
 }
 
 /// Webhook 载荷；generic 为结构化 JSON，其余适配常见 IM 机器人。
@@ -265,6 +334,29 @@ mod tests {
         assert_eq!(body["to"][0], "ops@example.com");
         assert_eq!(body["subject"], "主题");
         assert!(body["text"].as_str().unwrap().contains("详情"));
+    }
+
+    #[test]
+    fn errcode_channels_read_error_fields() {
+        let body = br#"{"errcode":310000,"errmsg":"keywords not in content"}"#;
+        let (ok, detail) = check_errcode(200, body, "errcode");
+        assert!(!ok);
+        assert!(detail.contains("310000"), "{detail}");
+        assert!(detail.contains("keywords"), "{detail}");
+
+        let body = br#"{"errcode":0,"errmsg":"ok"}"#;
+        assert!(check_errcode(200, body, "errcode").0);
+        // 飞书用 code 字段。
+        let body = br#"{"code":11247,"msg":"param invalid"}"#;
+        let (ok, detail) = check_feishu(200, body);
+        assert!(!ok);
+        assert!(detail.contains("11247"), "{detail}");
+        let body = br#"{"code":0,"msg":"success"}"#;
+        assert!(check_feishu(200, body).0);
+        // 非 JSON 响应退回状态码判定。
+        let (ok, detail) = status_outcome(429, b"slow down");
+        assert!(!ok);
+        assert!(detail.contains("slow down"), "{detail}");
     }
 
     #[test]

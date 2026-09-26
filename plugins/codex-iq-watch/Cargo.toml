@@ -1,6 +1,6 @@
 [package]
 name = "codex-iq-watch"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "Codex 降智监控插件：观察账号级信号并通过 Webhook/邮件 API 告警"
 license = "MIT"

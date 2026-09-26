@@ -3,7 +3,7 @@
   "name": "codex-iq-watch",
   "displayName": "Codex 降智监控",
   "publisher": "xunzhimeng",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "按账号观察上游过载、缓存命中骤降与响应变慢等降智信号，持续命中时通过 Webhook 或邮件 HTTP API 告警。",
   "license": "MIT",
   "author": "xunzhimeng",
