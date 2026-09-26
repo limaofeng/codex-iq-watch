@@ -22,14 +22,18 @@
 ## 能力声明
 
 - `request_lifecycle` + `usage`：观察请求终态与用量（`policy.observe_request`）
-- `management`：状态页（账号状态＋聚合告警历史＋信号详情）与 `status`/`events`/`alerts`/`settings`/`test-notify`/`account-clear` 管理路由
-- 权限：`requests`（观察事实）、`network`（通知出站）、`accounts`（账号显示名解析）、`public_endpoints`（页面图标）
+- `management`：状态页（账号状态＋聚合告警历史＋信号详情）与 `status`/`events`/`alerts`/`settings`/`test-notify`/`account-clear`/`models`/`candy-test` 管理路由
+- 权限：`requests`（观察事实）、`network`（通知出站）、`accounts`（账号显示名解析）、`models`（糖果题测试）、`public_endpoints`（页面图标）
+
+## 账号显示名
+
+与宿主账号列表主标识一致：`api_key` 凭据显示用户填的账号名称，其余（OAuth 等）优先邮箱；都为空时回退为截断的内部 ID。插件取不到宿主备注（notes）。
 
 状态页账号列表以宿主账号全集为基底（`host.auth.list`），观察状态按账号叠加：尚未产生观察的账号显示为「未观察」，停用账号带「停用」标记；列表按降智 > 疑似 > 正常 > 其他排序。
 
 ## 糖果题测试
 
-管理页每行账号可发起「糖果题测试」（顶部也有全局入口，弹窗内可选账号）：通过 `host.keys.list`/`host.models.list`/`host.model.execute`（`models` 权限）借用宿主客户端 Key 的身份、按账号发送一道推理题（正确答案 21）。结果（答对/答错/调用失败）写入账号 `last_probe` 并显示在「最近测试」列；这是主动探针，与信号窗口判定相互独立。
+管理页每行账号可发起「糖果题测试」（顶部也有全局入口，弹窗内可选账号）：通过 `host.keys.list`/`host.models.list`/`host.model.execute`（`models` 权限）借用宿主客户端 Key 的身份、按账号发送一道推理题（正确答案 21）。弹窗内可指定 reasoning effort（`minimal`/`low`/`medium`/`high`/`xhigh`/`max`，`default` 为不指定），用于对比不同思考档位下的推理质量。结果（答对/答错/调用失败）写入账号 `last_probe` 并显示在「最近测试」列；这是主动探针，与信号窗口判定相互独立。
 
 ## 构建
 

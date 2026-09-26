@@ -3,7 +3,7 @@
   "name": "codex-iq-watch",
   "displayName": "Codex 降智监控",
   "publisher": "xunzhimeng",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "按账号观察上游过载、缓存命中骤降与响应变慢等降智信号，持续命中时通过 Webhook 或邮件 HTTP API 告警。",
   "license": "MIT",
   "author": "xunzhimeng",
@@ -17,7 +17,13 @@
     "usage": {},
     "management": {}
   },
-        "permissions": ["requests", "network", "accounts", "models", "public_endpoints"],
+  "permissions": [
+    "requests",
+    "network",
+    "accounts",
+    "models",
+    "public_endpoints"
+  ],
   "configurationSchema": {
     "type": "object",
     "additionalProperties": false,
@@ -29,8 +35,13 @@
       },
       "watch_providers": {
         "type": "array",
-        "items": { "type": "string", "maxLength": 64 },
-        "default": ["openai"],
+        "items": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "default": [
+          "openai"
+        ],
         "description": "只监控这些 Provider 的请求；留空数组表示全部"
       },
       "window_ms": {
@@ -101,7 +112,14 @@
       },
       "webhook_format": {
         "type": "string",
-        "enum": ["generic", "wecom", "dingtalk", "feishu", "slack", "bark"],
+        "enum": [
+          "generic",
+          "wecom",
+          "dingtalk",
+          "feishu",
+          "slack",
+          "bark"
+        ],
         "default": "generic",
         "description": "Webhook 载荷格式：generic 为结构化 JSON，其余为常见机器人格式"
       },
@@ -112,7 +130,12 @@
       },
       "email_format": {
         "type": "string",
-        "enum": ["generic", "resend", "postmark", "sendgrid"],
+        "enum": [
+          "generic",
+          "resend",
+          "postmark",
+          "sendgrid"
+        ],
         "default": "generic",
         "description": "邮件 API 载荷格式"
       },
@@ -123,7 +146,10 @@
       },
       "email_to": {
         "type": "array",
-        "items": { "type": "string", "maxLength": 256 },
+        "items": {
+          "type": "string",
+          "maxLength": 256
+        },
         "maxItems": 8,
         "default": [],
         "description": "收件人列表"

@@ -109,16 +109,24 @@ pub async fn account_runtime(
     serde_json::from_slice(&reply.payload).map_err(|_| StateError::Invalid.fault())
 }
 
-/// 解析账号显示名：`name` 为空时回退到邮箱。
+/// 解析账号显示名，与宿主账号列表一致：api_key 凭据用用户填的账号名称，
+/// 其余（OAuth 等）优先邮箱，其次凭据名；都为空时调用方回退为内部 ID。
 pub fn runtime_label(account: &AuthRuntimeAccount) -> Option<String> {
     let name = account.name.trim();
-    if !name.is_empty() {
-        return Some(name.to_owned());
+    let email = account
+        .email
+        .as_ref()
+        .map(|email| email.trim())
+        .filter(|email| !email.is_empty());
+    if account.authentication_kind == "api_key" {
+        (!name.is_empty())
+            .then(|| name.to_owned())
+            .or_else(|| email.map(str::to_owned))
+    } else {
+        email
+            .map(str::to_owned)
+            .or_else(|| (!name.is_empty()).then(|| name.to_owned()))
     }
-    account.email.as_ref().and_then(|email| {
-        let email = email.trim();
-        (!email.is_empty()).then(|| email.to_owned())
-    })
 }
 
 /// 管理阶段批量列出账号投影：`account_id` -> 运行视图（含显示名/邮箱）。

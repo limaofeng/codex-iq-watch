@@ -95,6 +95,9 @@ pub struct CandyProbe {
     /// `correct` 答对、`wrong` 答错、`failed` 调用或解析失败。
     pub result: String,
     pub detail: String,
+    /// 本次请求的 reasoning effort；空表示未指定。
+    #[serde(default)]
+    pub effort: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -29,6 +29,7 @@
   var testAccountName = document.getElementById('test-account-name');
   var testAccountSelect = document.getElementById('test-account');
   var testModel = document.getElementById('test-model');
+  var testEffort = document.getElementById('test-effort');
   var testModelsHint = document.getElementById('test-models-hint');
   var testSend = document.getElementById('test-send');
   var testResult = document.getElementById('test-result');
@@ -42,6 +43,9 @@
     degraded: '降智',
     unobserved: '未观察',
   };
+
+  /* 测试可选 reasoning effort；default 表示不指定，交回宿主默认。 */
+  var EFFORTS = ['default', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
 
   var OUTCOME_LABELS = {
     succeeded: '成功',
@@ -322,9 +326,10 @@
     }
     var cls = probe.result === 'correct' ? 'ok' : 'fail';
     var text = probe.result === 'correct' ? '答对' : (probe.result === 'wrong' ? '答错' : '失败');
+    var spec = esc(probe.model || '') + (probe.effort ? ' · effort=' + esc(probe.effort) : '');
     return '<span class="' + cls + '" title="' + esc(probe.detail || '') + '">'
       + esc(text) + '</span> <span class="muted small">' + esc(formatMs(probe.at_ms)) + '</span>'
-      + '<div class="muted small">' + esc(probe.model || '') + '</div>';
+      + '<div class="muted small">' + spec + '</div>';
   }
 
   function openTest(accountId, label) {
@@ -375,6 +380,12 @@
   }
 
   function loadModels() {
+    if (!testEffort.options.length) {
+      testEffort.innerHTML = EFFORTS.map(function (value) {
+        return '<option value="' + value + '">'
+          + (value === 'default' ? 'default（不指定）' : value) + '</option>';
+      }).join('');
+    }
     testModelsHint.textContent = '正在加载模型…';
     testModel.disabled = true;
     request({ method: 'GET', path: 'models' }).then(function (data) {
@@ -407,13 +418,15 @@
       return;
     }
     var key = option ? option.getAttribute('data-key') : '';
+    var effort = testEffort.value;
+    var effortHint = effort && effort !== 'default' ? '（effort=' + esc(effort) + '）' : '';
     testSend.disabled = true;
-    testResult.innerHTML = '<span class="muted">发送中：经 ' + esc(model) + ' 提问糖果题（正确答案 21），最长可能需要数十秒…</span>';
+    testResult.innerHTML = '<span class="muted">发送中：经 ' + esc(model) + effortHint + ' 提问糖果题（正确答案 21），最长可能需要数十秒…</span>';
     request({
       method: 'POST',
       path: 'candy-test',
       contentType: 'application/json',
-      body: JSON.stringify({ account: account, model: model, key: key }),
+      body: JSON.stringify({ account: account, model: model, key: key, effort: effort }),
     }).then(function (data) {
       var cls = data.result === 'correct' ? 'ok' : 'fail';
       var label = data.result === 'correct' ? '答对 ✓' : (data.result === 'wrong' ? '答错 ✗' : '调用失败');

@@ -119,11 +119,13 @@ async fn observe_inner(
         let loaded = store::load_account(host, account_id).await?;
         let (mut state, version) =
             loaded.unwrap_or_else(|| (AccountState::new(account_id, now_ms), 0));
-        // 首次见到该账号时解析宿主显示名；失败仅回退为内部 ID，不重试。
-        if state.display_name.is_none()
-            && let Ok(account) = store::account_runtime(host, account_id).await
-        {
-            state.display_name = store::runtime_label(&account);
+        // 每次观察都按宿主最新投影刷新显示名（改名/补邮箱即时生效）；
+        // 解析失败保留旧值，仍由通知与管理页回退为内部 ID。
+        if let Ok(account) = store::account_runtime(host, account_id).await {
+            let resolved = store::runtime_label(&account);
+            if resolved != state.display_name {
+                state.display_name = resolved;
+            }
         }
         let event = extract_event(&observation, config, state.cache_baseline_hit);
         let verdict = apply_event(&mut state, event, &observation, config);
@@ -404,13 +406,21 @@ async fn management_handle(
                 .get("key")
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_owned);
+            let effort = incoming
+                .get("effort")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .filter(|value| !value.is_empty() && value != "default");
             if account.is_empty() || model.is_empty() {
                 return json_response(
                     400,
                     json!({"ok": false, "error": "missing account or model"}),
                 );
             }
-            json_response(200, run_candy_test(&call.host, &account, &model, key).await)
+            json_response(
+                200,
+                run_candy_test(&call.host, &account, &model, key, effort).await,
+            )
         }
         ("GET", "config") => json_response(200, effective_config(app, &call.host).await.redacted()),
         ("GET", "settings") => {
@@ -662,6 +672,7 @@ async fn run_candy_test(
     account_id: &str,
     model: &str,
     key: Option<String>,
+    effort: Option<String>,
 ) -> serde_json::Value {
     let Some(key_id) = pick_test_key(host, key).await else {
         return json!({
@@ -670,11 +681,20 @@ async fn run_candy_test(
             "detail": "没有可用的客户端 Key；先在宿主创建至少一个启用的 API Key",
         });
     };
-    let body = json!({
-        "model": model,
-        "input": CANDY_QUESTION,
-        "store": false,
-    });
+    // reasoning effort 仅在显式选择时透传；default 交给宿主/模型默认值。
+    let body = match &effort {
+        Some(effort) => json!({
+            "model": model,
+            "input": CANDY_QUESTION,
+            "store": false,
+            "reasoning": {"effort": effort},
+        }),
+        None => json!({
+            "model": model,
+            "input": CANDY_QUESTION,
+            "store": false,
+        }),
+    };
     let outcome = match store::execute_model(host, &key_id, model, account_id, &body).await {
         Ok(events) => {
             let text = collect_text(&events);
@@ -714,6 +734,7 @@ async fn run_candy_test(
         model: model.to_owned(),
         result: outcome.0.clone(),
         detail: outcome.1.clone(),
+        effort: effort.clone(),
     };
     // 测试记录允许覆盖写入：保存失败只影响展示，不影响判定结果返回。
     for _ in 0..3 {
@@ -738,6 +759,7 @@ async fn run_candy_test(
         "answer": CANDY_ANSWER,
         "model": model,
         "key": key_id,
+        "effort": effort,
         "excerpt": truncate_chars(&outcome.2, 600),
         "recorded": true,
     })
