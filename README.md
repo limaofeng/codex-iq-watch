@@ -17,11 +17,11 @@ Codex Proxy RS（codex-proxy-rs）的独立网关插件集。插件通过公开 
 
 ## 构建
 
-插件只依赖公开 SDK。SDK 未独立发布时，本地通过 Cargo 路径依赖引用宿主仓库源码，路径见各插件 `Cargo.toml`。
+插件只依赖公开 SDK。SDK 未独立发布，当前固定引用宿主仓库 commit（`zyycn/codex-proxy-rs@1c6b5a8f`），由 `Cargo.lock` 锁定，仓库可脱离本地并排目录独立构建。
 
 ```bash
-cargo test --manifest-path plugins/codex-iq-watch/Cargo.toml
-cargo build --manifest-path plugins/codex-iq-watch/Cargo.toml --release
+cargo test --manifest-path plugins/codex-iq-watch/Cargo.toml --locked
+cargo build --manifest-path plugins/codex-iq-watch/Cargo.toml --release --locked --target x86_64-unknown-linux-gnu
 ```
 
-打包见 `scripts/` 与各插件 README。
+CI（`.github/workflows/codex-iq-watch.yml`）执行 fmt/clippy/test/Linux 构建并产出 `cpr-plugin` 归档；打 `codex-iq-watch-*` tag 会把归档挂到 Release。手动打包见 `scripts/package` 与各插件 README。

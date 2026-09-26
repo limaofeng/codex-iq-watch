@@ -28,10 +28,10 @@
 ## 构建
 
 ```bash
-cargo test --manifest-path Cargo.toml
-cargo build --manifest-path Cargo.toml --release --target x86_64-unknown-linux-gnu
+cargo test --manifest-path Cargo.toml --locked
+cargo build --manifest-path Cargo.toml --release --locked --target x86_64-unknown-linux-gnu
 ```
 
-SDK 未发布时使用相对路径依赖：`../../../codex-proxy-rs/backend/crates/gateway-plugin/sdk`。
+SDK 未发布，`Cargo.toml` 固定引用宿主仓库 commit `zyycn/codex-proxy-rs@1c6b5a8f`；锁文件随仓库管理，构建需要 Rust ≥ 1.97（见 `rust-toolchain.toml`）。
 
-打包见 `../../scripts/package`（`cpr-plugin package` 封装）。
+打包见 `../../scripts/package`（`cpr-plugin package` 封装），或在 CI 打 `codex-iq-watch-*` tag 产出 Release 附件。
