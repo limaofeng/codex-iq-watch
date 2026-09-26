@@ -209,28 +209,71 @@ pub async fn load_settings(
     Ok(result.record.map(|record| (record.value, record.version)))
 }
 
-/// CAS 写入通知设置；允许创建与更新。
+/// CAS 写入通知设置；遇版本冲突重读并重试，仍失败才报错。
 pub async fn save_settings(
     host: &HostClient,
     value: &serde_json::Value,
-    expected_version: Option<u64>,
 ) -> Result<u64, PluginFault> {
-    let request = StatePutRequest {
+    for _ in 0..4 {
+        let version = load_settings(host)
+            .await?
+            .map(|(_, version)| version)
+            .filter(|version| *version != 0);
+        let request = StatePutRequest {
+            namespace: NAMESPACE.to_owned(),
+            key: SETTINGS_KEY.to_owned(),
+            value: value.clone(),
+            expected_version: version,
+        };
+        match host
+            .call(
+                "host.state.put",
+                serde_json::to_value(request).unwrap_or_else(|_| serde_json::json!({})),
+                Vec::new(),
+            )
+            .await
+        {
+            Ok(reply) => {
+                return serde_json::from_value::<gateway_plugin_sdk::call::host::StatePutResult>(
+                    reply.result,
+                )
+                .map(|result| result.version)
+                .map_err(|_| StateError::Invalid.fault());
+            }
+            Err(error) => {
+                let fault = error.into_plugin_fault();
+                if fault.code != ErrorCode::Conflict {
+                    return Err(fault);
+                }
+            }
+        }
+    }
+    Err(PluginFault::new(
+        ErrorCode::Conflict,
+        "settings write kept conflicting",
+    ))
+}
+
+/// 清空通知设置，恢复为宿主配置；键不存在时视为成功。
+pub async fn delete_settings(host: &HostClient) -> Result<(), PluginFault> {
+    let Some((_, version)) = load_settings(host).await? else {
+        return Ok(());
+    };
+    let request = gateway_plugin_sdk::call::host::StateDeleteRequest {
         namespace: NAMESPACE.to_owned(),
         key: SETTINGS_KEY.to_owned(),
-        value: value.clone(),
-        expected_version,
+        expected_version: version,
     };
     let reply = host
         .call(
-            "host.state.put",
+            "host.state.delete",
             serde_json::to_value(request).unwrap_or_else(|_| serde_json::json!({})),
             Vec::new(),
         )
         .await
         .map_err(|error| error.into_plugin_fault())?;
-    serde_json::from_value::<gateway_plugin_sdk::call::host::StatePutResult>(reply.result)
-        .map(|result| result.version)
+    serde_json::from_value::<serde_json::Value>(reply.result)
+        .map(|_| ())
         .map_err(|_| StateError::Invalid.fault())
 }
 

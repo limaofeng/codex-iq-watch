@@ -17,6 +17,7 @@
   var refreshBtn = document.getElementById('refresh-btn');
   var detailClose = document.getElementById('detail-close');
   var saveBtn = document.getElementById('save-settings');
+  var resetBtn = document.getElementById('reset-settings');
   var reloadSettingsBtn = document.getElementById('reload-settings');
   var settingsHint = document.getElementById('settings-hint');
 
@@ -224,28 +225,32 @@
     settingsHint.textContent = '正在读取…';
     request({ method: 'GET', path: 'settings' }).then(function (data) {
       var settings = data.settings || {};
-      field('f-webhook-url').value = settings.webhook_url || '';
-      field('f-webhook-format').value = settings.webhook_format || 'generic';
-      field('f-webhook-auth').value = '';
-      field('f-webhook-auth').placeholder = settings.webhook_auth_header_configured
-        ? '已配置（留空保持，勾选清空后删除）' : 'Header-Name: value';
-      field('f-webhook-auth-clear').checked = false;
-      field('f-email-url').value = settings.email_url || '';
-      field('f-email-format').value = settings.email_format || 'generic';
-      field('f-email-from').value = settings.email_from || '';
-      field('f-email-to').value = (settings.email_to || []).join(', ');
-      field('f-email-subject').value = settings.email_subject_template || '';
-      field('f-email-body').value = settings.email_body_template || '';
-      field('f-email-auth').value = '';
-      field('f-email-auth').placeholder = settings.email_auth_header_configured
-        ? '已配置（留空保持，勾选清空后删除）' : 'Header-Name: value';
-      field('f-email-auth-clear').checked = false;
-      field('f-alert-message').value = settings.alert_message || '';
+      fillSettings(settings);
       settingsHint.textContent = '认证头不回显；其余字段保存后立即生效，覆盖宿主配置中的同名项。';
     }).catch(function (error) {
       settingsHint.className = 'form-hint fail';
       settingsHint.textContent = '读取设置失败：' + error.message;
     });
+  }
+
+  function fillSettings(settings) {
+    field('f-webhook-url').value = settings.webhook_url || '';
+    field('f-webhook-format').value = settings.webhook_format || 'generic';
+    field('f-webhook-auth').value = '';
+    field('f-webhook-auth').placeholder = settings.webhook_auth_header_configured
+      ? '已配置（留空保持，勾选清空后删除）' : 'Header-Name: value';
+    field('f-webhook-auth-clear').checked = false;
+    field('f-email-url').value = settings.email_url || '';
+    field('f-email-format').value = settings.email_format || 'generic';
+    field('f-email-from').value = settings.email_from || '';
+    field('f-email-to').value = (settings.email_to || []).join(', ');
+    field('f-email-subject').value = settings.email_subject_template || '';
+    field('f-email-body').value = settings.email_body_template || '';
+    field('f-email-auth').value = '';
+    field('f-email-auth').placeholder = settings.email_auth_header_configured
+      ? '已配置（留空保持，勾选清空后删除）' : 'Header-Name: value';
+    field('f-email-auth-clear').checked = false;
+    field('f-alert-message').value = settings.alert_message || '';
   }
 
   function saveSettings() {
@@ -295,6 +300,28 @@
 
   refreshBtn.addEventListener('click', loadStatus);
   reloadSettingsBtn.addEventListener('click', loadSettings);
+  resetBtn.addEventListener('click', function () {
+    if (!window.confirm('恢复默认将删除本页保存的全部通知设置（含认证头），改回宿主配置。继续吗？')) {
+      return;
+    }
+    resetBtn.disabled = true;
+    request({
+      method: 'POST',
+      path: 'settings-reset',
+      contentType: 'application/json',
+      body: '{}',
+    }).then(function () {
+      fillSettings({});
+      settingsHint.className = 'form-hint ok';
+      settingsHint.textContent = '已恢复默认，改回宿主配置。';
+      loadStatus();
+    }).catch(function (error) {
+      settingsHint.className = 'form-hint fail';
+      settingsHint.textContent = '恢复失败：' + error.message;
+    }).finally(function () {
+      resetBtn.disabled = false;
+    });
+  });
   detailClose.addEventListener('click', function () { detailCard.hidden = true; });
   saveBtn.addEventListener('click', function (event) {
     event.preventDefault();

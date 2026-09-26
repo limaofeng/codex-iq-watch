@@ -313,11 +313,15 @@ async fn management_handle(
                     settings[key] = json!("");
                 }
             }
-            match store::save_settings(&call.host, &settings, None).await {
+            match store::save_settings(&call.host, &settings).await {
                 Ok(version) => json_response(200, json!({"ok": true, "version": version})),
                 Err(error) => json_response(500, json!({"ok": false, "error": error.message})),
             }
         }
+        ("POST", "settings-reset") => match store::delete_settings(&call.host).await {
+            Ok(()) => json_response(200, json!({"ok": true})),
+            Err(error) => json_response(500, json!({"ok": false, "error": error.message})),
+        },
         ("GET", "events") => {
             let account = query_param(&request.query, "account").unwrap_or_default();
             let events = match store::load_account_view(&call.host, &account).await {
@@ -489,6 +493,12 @@ fn management_registration() -> ManagementRegistration {
             ManagementRoute {
                 method: "POST".to_owned(),
                 path: "settings".to_owned(),
+                request_content_types: vec!["application/json".to_owned()],
+                response_content_types: vec!["application/json".to_owned()],
+            },
+            ManagementRoute {
+                method: "POST".to_owned(),
+                path: "settings-reset".to_owned(),
                 request_content_types: vec!["application/json".to_owned()],
                 response_content_types: vec!["application/json".to_owned()],
             },
