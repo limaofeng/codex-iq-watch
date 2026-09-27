@@ -19,6 +19,8 @@ use crate::detector::AccountState;
 pub const NAMESPACE: &str = "watch";
 const INDEX_KEY: &str = "accounts";
 const SETTINGS_KEY: &str = "settings";
+/// 清单允许 256 条记录，保留索引与设置各一条；不自动淘汰账号隔离状态。
+pub const MAX_ACCOUNTS: usize = 254;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StateError {
@@ -70,6 +72,11 @@ pub async fn save_account(
     state: &AccountState,
     version: Option<u64>,
 ) -> Result<u64, PluginFault> {
+    // 创建前先以索引 CAS 预留名额，防止并发新账号挤占设置记录。
+    // 保存失败也保留可见的预留项；用户可用「清除」释放，不静默丢弃账号状态。
+    if version.is_none() {
+        touch_index(host, &state.account_id, state.last_observed_at_ms).await?;
+    }
     let request = StatePutRequest {
         namespace: NAMESPACE.to_owned(),
         key: account_key(&state.account_id),
@@ -185,7 +192,8 @@ pub async fn delete_account(host: &HostClient, account_id: &str) -> Result<bool,
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(true);
     }
-    let _ = remove_index(host, account_id).await;
+    // 索引移除失败必须报告，不能让已清除记录继续占用预留名额而返回成功。
+    remove_index(host, account_id).await?;
     Ok(deleted)
 }
 
@@ -241,10 +249,13 @@ async fn remove_index(host: &HostClient, account_id: &str) -> Result<(), PluginF
             }
         }
     }
-    Ok(())
+    Err(PluginFault::new(
+        ErrorCode::Conflict,
+        "account index removal kept conflicting",
+    ))
 }
 
-/// 维护账号索引键，供管理页列举状态；失败不影响主流程，由调用方降级处理。
+/// 维护账号索引键，供管理页列举状态；创建账号前也用它预留名额。
 pub async fn touch_index(
     host: &HostClient,
     account_id: &str,
@@ -273,26 +284,7 @@ pub async fn touch_index(
             ),
             None => (serde_json::Map::new(), None),
         };
-        // 索引是对象：`schema.type=object`；键即 account_id，值为触达摘要。
-        let entry = serde_json::json!({"account_id": account_id, "touched_at_ms": now_ms});
-        accounts.insert(account_id.to_owned(), entry);
-        if accounts.len() > 64 {
-            let mut ordered: Vec<(u64, String)> = accounts
-                .iter()
-                .map(|(id, item)| {
-                    (
-                        item.get("touched_at_ms")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(0),
-                        id.clone(),
-                    )
-                })
-                .collect();
-            ordered.sort();
-            for (_, id) in ordered.drain(0..ordered.len() - 64) {
-                accounts.remove(&id);
-            }
-        }
+        update_account_index(&mut accounts, account_id, now_ms)?;
         let put = StatePutRequest {
             namespace: NAMESPACE.to_owned(),
             key: INDEX_KEY.to_owned(),
@@ -324,6 +316,24 @@ pub async fn touch_index(
         }
     }
     Err(StateError::Callback("index write conflict".to_owned()).fault())
+}
+
+fn update_account_index(
+    accounts: &mut serde_json::Map<String, serde_json::Value>,
+    account_id: &str,
+    now_ms: u64,
+) -> Result<(), PluginFault> {
+    if !accounts.contains_key(account_id) && accounts.len() >= MAX_ACCOUNTS {
+        return Err(PluginFault::new(
+            ErrorCode::Capacity,
+            "监控账号状态已达 254 条，保留既有状态；请手动清除不再需要的账号记录",
+        ));
+    }
+    accounts.insert(
+        account_id.to_owned(),
+        serde_json::json!({"account_id": account_id, "touched_at_ms": now_ms}),
+    );
+    Ok(())
 }
 
 /// 读取账号索引；不存在时返回空列表。索引存储为 `{account_id: {account_id,touched_at_ms}}` 对象。
@@ -532,4 +542,25 @@ pub async fn load_account_view(
     Ok(load_account(host, account_id)
         .await?
         .map(|(state, _)| serde_json::to_value(state).unwrap_or_default()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn index_preserves_more_than_64_accounts_and_never_evicts_at_capacity() {
+        let mut accounts = serde_json::Map::new();
+        for index in 0..MAX_ACCOUNTS {
+            update_account_index(&mut accounts, &format!("account-{index}"), index as u64).unwrap();
+        }
+        assert_eq!(accounts.len(), MAX_ACCOUNTS);
+        assert!(accounts.contains_key("account-0"));
+        let before = accounts.clone();
+        let error = update_account_index(&mut accounts, "overflow", 1000).unwrap_err();
+        assert_eq!(error.code, ErrorCode::Capacity);
+        assert_eq!(accounts, before);
+        update_account_index(&mut accounts, "account-0", 1001).unwrap();
+        assert_eq!(accounts["account-0"]["touched_at_ms"], 1001);
+    }
 }

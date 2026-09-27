@@ -103,6 +103,9 @@ impl WatchConfig {
     pub fn normalized(mut self) -> Self {
         self.window_ms = self.window_ms.clamp(60_000, 3_600_000);
         self.cooldown_ms = self.cooldown_ms.clamp(60_000, 86_400_000);
+        self.latency_ms = self.latency_ms.clamp(1_000, 600_000);
+        self.first_token_ms = self.first_token_ms.clamp(1_000, 600_000);
+        self.cache_min_input_tokens = self.cache_min_input_tokens.clamp(0, 1_000_000);
         self.min_signaled_requests = self.min_signaled_requests.clamp(2, 20);
         self.min_signal_kinds = self.min_signal_kinds.clamp(1, 5);
         self.consecutive_triggers = self.consecutive_triggers.clamp(1, 10);
@@ -186,14 +189,19 @@ impl WatchConfig {
         if let Some(value) = settings
             .get("min_signaled_requests")
             .and_then(Value::as_u64)
+            && let Ok(number) = u32::try_from(value)
         {
-            self.min_signaled_requests = value as u32;
+            self.min_signaled_requests = number;
         }
-        if let Some(value) = settings.get("min_signal_kinds").and_then(Value::as_u64) {
-            self.min_signal_kinds = value as u32;
+        if let Some(value) = settings.get("min_signal_kinds").and_then(Value::as_u64)
+            && let Ok(number) = u32::try_from(value)
+        {
+            self.min_signal_kinds = number;
         }
-        if let Some(value) = settings.get("consecutive_triggers").and_then(Value::as_u64) {
-            self.consecutive_triggers = value as u32;
+        if let Some(value) = settings.get("consecutive_triggers").and_then(Value::as_u64)
+            && let Ok(number) = u32::try_from(value)
+        {
+            self.consecutive_triggers = number;
         }
         // 调度避让参数同样允许页面覆盖。
         if let Some(value) = settings

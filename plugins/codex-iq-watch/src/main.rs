@@ -7,7 +7,10 @@ mod scheduler;
 mod store;
 mod time_util;
 
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 use gateway_plugin_sdk::{
     ErrorCode, PluginFault,
@@ -31,6 +34,8 @@ use crate::{
 struct App {
     /// 宿主握手配置；页面保存的通知设置在 `effective_config` 中按需叠加。
     config: WatchConfig,
+    /// 宿主没有配额查询接口；本进程见到容量错误后持续提示，成功手动清理才解除。
+    storage_capacity_failed: AtomicBool,
 }
 
 /// 生效配置 = 宿主配置 + 管理页保存的通知覆盖；每次调用读取，保证保存后立即生效。
@@ -58,7 +63,10 @@ async fn main() {
         serde_json::from_value::<WatchConfig>(session.handshake().configuration.clone())
             .unwrap_or_default()
             .normalized();
-    let app = Arc::new(App { config });
+    let app = Arc::new(App {
+        config,
+        storage_capacity_failed: AtomicBool::new(false),
+    });
 
     let plugin = match PluginBuilder::from_json(include_bytes!("../plugin.json"))
         .and_then(|builder| builder.on(methods::OBSERVE_REQUEST, observe(app.clone())))
@@ -114,6 +122,9 @@ async fn observe_request(
         return Ok(TypedReply::new(Empty {}));
     }
     if let Err(error) = observe_inner(app, &call.host, &config, &account_id, observation).await {
+        if error.code == ErrorCode::Capacity {
+            app.storage_capacity_failed.store(true, Ordering::Relaxed);
+        }
         log(&call.host, "watch_observe_failed", &error.message).await;
     }
     Ok(TypedReply::new(Empty {}))
@@ -159,9 +170,8 @@ async fn observe_inner(
     }
 }
 
-/// 发送告警并回写投递结果；通知失败会记录到投递明细与日志，不回滚判定。
-/// 先用 CAS 抢占冷却位再发送：并发观察下只有一个链路会真正发出告警，
-/// `last_alert_at_ms` 丢失曾导致同账号在冷却期内重复推送。
+/// 告警与冷却位一起落盘后才发送，父调用超时也保留「结果未确认」记录。
+/// 宿主不提供独立后台回调；未知结果不能自动重发，否则可能重复通知。
 async fn fire_alert(
     _app: &App,
     host: &HostClient,
@@ -174,30 +184,38 @@ async fn fire_alert(
         return;
     }
     // 阶段一：抢占告警位。回写失败（含状态被清空）视为另一条链路已接手，直接放弃。
-    let mut claimed = state.clone();
+    let mut claimed = None;
     for _ in 0..3 {
         let Ok(Some((fresh, version))) = store::load_account(host, &state.account_id).await else {
             return;
         };
         // 冷却位已被更新（其他链路已告警），跳过本次发送。
-        if fresh.last_alert_at_ms != state.last_alert_at_ms {
+        if fresh.last_alert_at_ms != state.last_alert_at_ms
+            || fresh.status != AccountStatus::Degraded
+        {
             return;
         }
-        let mut candidate = fresh.clone();
+        let mut candidate = fresh;
         candidate.last_alert_at_ms = now_ms;
+        candidate.alerts.push(AlertRecord {
+            at_ms: now_ms,
+            verdict: verdict.clone(),
+            deliveries: pending_deliveries(config),
+        });
+        candidate.prune(candidate.last_observed_at_ms, config.window_ms);
         let expected = (version != 0).then_some(version);
         match store::save_account(host, &candidate, expected).await {
             Ok(_) => {
-                claimed = candidate;
+                claimed = Some(candidate);
                 break;
             }
             Err(error) if error.code == ErrorCode::Conflict => continue,
             Err(_) => return,
         }
     }
-    if claimed.last_alert_at_ms != now_ms {
+    let Some(claimed) = claimed else {
         return;
-    }
+    };
 
     let (title, detail) = render_alert(&claimed, verdict, config);
     let notice = Notice {
@@ -208,26 +226,15 @@ async fn fire_alert(
         verdict: serde_json::to_value(verdict).unwrap_or_default(),
     };
     let deliveries = deliver_all(host, config, &notice).await;
-    // 阶段二：把告警与投递明细追加进历史；失败只丢记录，冷却位已生效，不重复发送。
+    // 只补写原告警的投递结果，不覆盖期间已更新的账号判定，也不复活已清除的告警。
     for _ in 0..3 {
         let Ok(Some((mut fresh, version))) = store::load_account(host, &state.account_id).await
         else {
             break;
         };
-        fresh.status = AccountStatus::Degraded;
-        fresh.alerts.push(AlertRecord {
-            at_ms: now_ms,
-            verdict: verdict.clone(),
-            deliveries: deliveries
-                .iter()
-                .map(|item| Delivery {
-                    channel: item.channel.clone(),
-                    ok: item.ok,
-                    detail: item.detail.clone(),
-                })
-                .collect(),
-        });
-        fresh.prune(now_ms, config.window_ms);
+        if !complete_deliveries(&mut fresh, now_ms, &deliveries) {
+            break;
+        }
         let expected = (version != 0).then_some(version);
         match store::save_account(host, &fresh, expected).await {
             Ok(_) => break,
@@ -245,6 +252,43 @@ async fn fire_alert(
             .await;
         }
     }
+}
+
+fn pending_deliveries(config: &WatchConfig) -> Vec<Delivery> {
+    let mut channels = Vec::new();
+    if !config.webhook_url.is_empty() {
+        channels.push("webhook");
+    }
+    if !config.email_url.is_empty() && !config.email_to.is_empty() {
+        channels.push("email");
+    }
+    channels
+        .into_iter()
+        .map(|channel| Delivery {
+            channel: channel.to_owned(),
+            ok: false,
+            detail: "投递结果未确认：可能尚未发送、仍在发送或观察调用已超时，不自动重发".to_owned(),
+        })
+        .collect()
+}
+
+fn complete_deliveries(
+    state: &mut AccountState,
+    at_ms: u64,
+    deliveries: &[notify::DeliveryOutcome],
+) -> bool {
+    let Some(alert) = state.alerts.iter_mut().find(|alert| alert.at_ms == at_ms) else {
+        return false;
+    };
+    alert.deliveries = deliveries
+        .iter()
+        .map(|item| Delivery {
+            channel: item.channel.clone(),
+            ok: item.ok,
+            detail: item.detail.clone(),
+        })
+        .collect();
+    true
 }
 
 fn management(app: Arc<App>) -> impl Fn(ManagementCall) -> BoxFuture<ManagementResult> {
@@ -273,22 +317,50 @@ async fn management_handle(
                     )),
                 ),
             };
-            let index = store::load_index(&call.host).await.unwrap_or_default();
+            let mut storage_warnings = Vec::new();
+            let index = match store::load_index(&call.host).await {
+                Ok(index) => index,
+                Err(_) => {
+                    storage_warnings.push("读取状态索引失败，仍尝试读取宿主现有账号的状态");
+                    Vec::new()
+                }
+            };
+            let indexed_ids: std::collections::BTreeSet<String> = index
+                .iter()
+                .filter_map(|item| item.get("account_id").and_then(|id| id.as_str()))
+                .map(str::to_owned)
+                .collect();
+            // 旧版索引曾只保留 64 个账号；按宿主全集补查，不能把仍被隔离的账号显示为未观察。
+            let ids: std::collections::BTreeSet<String> =
+                runtime.keys().chain(indexed_ids.iter()).cloned().collect();
             let mut states = std::collections::BTreeMap::new();
-            for item in index {
-                let Some(id) = item.get("account_id").and_then(|id| id.as_str()) else {
-                    continue;
-                };
-                if let Ok(Some((state, _))) = store::load_account(&call.host, id).await {
-                    states.insert(id.to_owned(), state);
+            let mut unreadable = std::collections::BTreeSet::new();
+            for id in &ids {
+                match store::load_account(&call.host, id).await {
+                    Ok(Some((state, _))) => {
+                        states.insert(id.clone(), state);
+                    }
+                    Ok(None) => {}
+                    Err(_) => {
+                        unreadable.insert(id.clone());
+                    }
                 }
             }
-            let mut ids: Vec<String> = runtime.keys().cloned().collect();
-            for id in states.keys() {
-                if !runtime.contains_key(id) {
-                    ids.push(id.clone());
-                }
+            if !unreadable.is_empty() {
+                storage_warnings.push("部分账号状态读取失败，显示为未知，不代表账号正常");
             }
+            if indexed_ids.len() >= store::MAX_ACCOUNTS
+                || states.len() >= store::MAX_ACCOUNTS
+                || runtime.len() > store::MAX_ACCOUNTS
+            {
+                storage_warnings.push("最多保存 254 个账号状态，容量满后新账号无法记录；保留既有隔离状态，请手动清除不再需要的记录");
+            }
+            if app.storage_capacity_failed.load(Ordering::Relaxed) {
+                storage_warnings
+                    .push("状态写入遇到记录或字节配额不足，部分观察未保存；请清理不再需要的记录");
+            }
+            let storage_warning =
+                (!storage_warnings.is_empty()).then(|| storage_warnings.join(" / "));
             let mut accounts = Vec::new();
             let mut alerts = Vec::new();
             for id in ids {
@@ -298,6 +370,7 @@ async fn management_handle(
                     .or_else(|| states.get(&id).and_then(|state| state.display_name.clone()));
                 let (status, state) = match states.get(&id) {
                     Some(state) => (status_label(state.status), Some(state)),
+                    None if unreadable.contains(&id) => ("unknown", None),
                     None => ("unobserved", None),
                 };
                 let enabled = runtime.get(&id).map(|account| account.enabled);
@@ -361,6 +434,7 @@ async fn management_handle(
                     "accounts": accounts,
                     "alerts": alerts,
                     "accounts_error": accounts_error,
+                    "storage_warning": storage_warning,
                     "config": effective_config(app, &call.host).await.redacted(),
                 }),
             )
@@ -377,7 +451,10 @@ async fn management_handle(
                 return json_response(400, json!({"ok": false, "error": "missing account"}));
             }
             match store::delete_account(&call.host, &account).await {
-                Ok(deleted) => json_response(200, json!({"ok": true, "deleted": deleted})),
+                Ok(deleted) => {
+                    app.storage_capacity_failed.store(false, Ordering::Relaxed);
+                    json_response(200, json!({"ok": true, "deleted": deleted}))
+                }
                 Err(error) => json_response(500, json!({"ok": false, "error": error.message})),
             }
         }
@@ -490,8 +567,16 @@ async fn management_handle(
             )
         }
         ("POST", "settings") => {
-            let incoming: serde_json::Value =
-                serde_json::from_slice(&call.payload).unwrap_or_else(|_| json!({}));
+            let incoming: serde_json::Value = match serde_json::from_slice(&call.payload) {
+                Ok(value) => value,
+                Err(_) => return json_response(400, json!({"error": "invalid JSON body"})),
+            };
+            if !incoming.is_object() {
+                return json_response(400, json!({"error": "settings body must be a JSON object"}));
+            }
+            if let Err(message) = validate_settings(&incoming) {
+                return json_response(400, json!({"error": message}));
+            }
             // 未提交的敏感字段保留原值；clear_* 标记用于显式清空。
             let mut settings = store::load_settings(&call.host)
                 .await
@@ -510,8 +595,17 @@ async fn management_handle(
                 "email_body_template",
                 "alert_message",
             ] {
-                if let Some(value) = incoming.get(key) {
-                    settings[key] = value.clone();
+                match incoming.get(key) {
+                    // 与检测参数一致：null 表示移除覆盖、回到宿主配置。
+                    Some(serde_json::Value::Null) => {
+                        if let Some(map) = settings.as_object_mut() {
+                            map.remove(key);
+                        }
+                    }
+                    Some(value) => {
+                        settings[key] = value.clone();
+                    }
+                    None => {}
                 }
             }
             // 检测参数覆盖：JSON null 表示清除覆盖、回到宿主配置。
@@ -636,6 +730,143 @@ fn query_param(query: &str, key: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// 保存前校验管理页设置：非法值返回 400，不静默覆盖已有配置。
+fn validate_settings(incoming: &serde_json::Value) -> Result<(), String> {
+    // 字符串与数组字段的类型检查。
+    let string_fields = [
+        "webhook_url",
+        "webhook_format",
+        "webhook_auth_header",
+        "email_url",
+        "email_format",
+        "email_from",
+        "email_subject_template",
+        "email_body_template",
+        "email_auth_header",
+        "alert_message",
+        "schedule_all_degraded",
+    ];
+    for key in string_fields {
+        match incoming.get(key) {
+            None | Some(serde_json::Value::Null) => {}
+            Some(value) if !value.is_string() => {
+                return Err(format!("{key} must be a string"));
+            }
+            Some(value) => {
+                let limit = match key {
+                    "alert_message" => 1024,
+                    "email_subject_template" | "email_body_template" => 4096,
+                    "email_from" => 256,
+                    "webhook_url" | "email_url" => 2048,
+                    "webhook_auth_header" | "email_auth_header" => 4096,
+                    _ => 64,
+                };
+                if value.as_str().unwrap_or_default().len() > limit {
+                    return Err(format!("{key} must be at most {limit} bytes"));
+                }
+            }
+        }
+    }
+    let enum_fields: &[(&str, &[&str])] = &[
+        (
+            "webhook_format",
+            &["generic", "wecom", "dingtalk", "feishu", "slack", "bark"],
+        ),
+        (
+            "email_format",
+            &["generic", "resend", "postmark", "sendgrid"],
+        ),
+        ("schedule_all_degraded", &["delegate", "reject"]),
+    ];
+    for (key, allowed) in enum_fields {
+        if let Some(value) = incoming.get(*key).and_then(|v| v.as_str())
+            && !value.is_empty()
+            && !allowed.contains(&value)
+        {
+            return Err(format!("{key} must be one of {}", allowed.join("/")));
+        }
+    }
+    for key in ["webhook_url", "email_url"] {
+        if let Some(url) = incoming.get(key).and_then(|v| v.as_str()) {
+            let url = url.trim();
+            if !url.is_empty() && !url.starts_with("http://") && !url.starts_with("https://") {
+                return Err(format!("{key} must be an http(s) URL"));
+            }
+        }
+    }
+    for key in ["webhook_auth_header", "email_auth_header"] {
+        if let Some(value) = incoming.get(key).and_then(|v| v.as_str()) {
+            let value = value.trim();
+            if !value.is_empty() && WatchConfig::auth_header(value).is_none() {
+                return Err(format!("{key} must use 'Header-Name: value' format"));
+            }
+        }
+    }
+    // 数字字段：类型检查 + 与 normalized() 一致的范围校验。
+    let numeric_fields: &[(&str, u64, u64)] = &[
+        ("window_ms", 60_000, 3_600_000),
+        ("cooldown_ms", 60_000, 86_400_000),
+        ("first_token_ms", 500, 120_000),
+        ("latency_ms", 500, 120_000),
+        ("cache_min_input_tokens", 0, 1_000_000),
+        ("min_signaled_requests", 2, 20),
+        ("min_signal_kinds", 1, 5),
+        ("consecutive_triggers", 1, 10),
+    ];
+    for (key, min, max) in numeric_fields {
+        match incoming.get(*key) {
+            None | Some(serde_json::Value::Null) => {}
+            Some(value) if !value.is_u64() => {
+                return Err(format!("{key} must be a non-negative integer"));
+            }
+            Some(value) => {
+                let number = value.as_u64().unwrap_or(0);
+                if number < *min || number > *max {
+                    return Err(format!("{key} must be in [{min}, {max}]"));
+                }
+            }
+        }
+    }
+    for key in [
+        "enabled",
+        "schedule_exclude_degraded",
+        "clear_webhook_auth",
+        "clear_email_auth",
+    ] {
+        match incoming.get(key) {
+            None | Some(serde_json::Value::Null) => {}
+            Some(value) if !value.is_boolean() => {
+                return Err(format!("{key} must be a boolean"));
+            }
+            _ => {}
+        }
+    }
+    for key in ["watch_providers", "email_to"] {
+        match incoming.get(key) {
+            None | Some(serde_json::Value::Null) => {}
+            Some(value) => {
+                let Some(items) = value.as_array() else {
+                    return Err(format!("{key} must be an array"));
+                };
+                if items.iter().any(|item| !item.is_string()) {
+                    return Err(format!("{key} must contain only strings"));
+                }
+                if items.len() > 16 {
+                    return Err(format!("{key} must have at most 16 items"));
+                }
+                let item_limit = if key == "email_to" { 256 } else { 64 };
+                if items
+                    .iter()
+                    .any(|item| item.as_str().unwrap_or_default().len() > item_limit)
+                {
+                    return Err(format!("{key} items must be at most {item_limit} bytes"));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// 只解码 %XX 与 `+`，管理页查询参数足够使用。
@@ -989,7 +1220,110 @@ fn management_registration() -> ManagementRegistration {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use gateway_plugin_sdk::{Capability, Manifest, Permission};
+
+    #[test]
+    fn unconfirmed_deliveries_are_persistable_for_all_configured_channels() {
+        let config = WatchConfig {
+            webhook_url: "https://example.test/webhook".to_owned(),
+            email_url: "https://example.test/mail".to_owned(),
+            email_to: vec!["test@example.test".to_owned()],
+            ..WatchConfig::default()
+        };
+        let deliveries = pending_deliveries(&config);
+        assert_eq!(deliveries.len(), 2);
+        assert!(
+            deliveries
+                .iter()
+                .all(|item| !item.ok && item.detail.contains("未确认"))
+        );
+        assert!(pending_deliveries(&WatchConfig::default()).is_empty());
+    }
+
+    #[test]
+    fn delivery_completion_does_not_change_newer_health_or_recreate_cleared_alert() {
+        let mut state = AccountState::new("account", 1);
+        state.status = AccountStatus::Healthy;
+        state.alerts.push(AlertRecord {
+            at_ms: 1,
+            verdict: detector::Verdict {
+                degraded: true,
+                signaled_requests: 2,
+                signal_kinds: vec![detector::Signal::Overload],
+                last_signal_at_ms: 1,
+            },
+            deliveries: vec![],
+        });
+        let deliveries = [notify::DeliveryOutcome {
+            channel: "webhook".to_owned(),
+            ok: true,
+            detail: "HTTP 200".to_owned(),
+        }];
+        assert!(complete_deliveries(&mut state, 1, &deliveries));
+        assert_eq!(state.status, AccountStatus::Healthy);
+        assert!(state.alerts[0].deliveries[0].ok);
+        state.alerts.clear();
+        assert!(!complete_deliveries(&mut state, 1, &deliveries));
+        assert!(state.alerts.is_empty());
+    }
+
+    #[test]
+    fn settings_validation_rejects_bad_types_ranges_and_formats() {
+        assert!(
+            validate_settings(&json!({"window_ms": 10_000}))
+                .unwrap_err()
+                .contains("window_ms")
+        );
+        assert!(
+            validate_settings(&json!({"enabled": "yes"}))
+                .unwrap_err()
+                .contains("boolean")
+        );
+        assert!(
+            validate_settings(&json!({"webhook_url": "ftp://x"}))
+                .unwrap_err()
+                .contains("http")
+        );
+        assert!(
+            validate_settings(&json!({"webhook_auth_header": "no-colon"}))
+                .unwrap_err()
+                .contains("Header-Name")
+        );
+        assert!(
+            validate_settings(&json!({"email_to": "ops@example.com"}))
+                .unwrap_err()
+                .contains("array")
+        );
+        assert!(
+            validate_settings(&json!({"schedule_all_degraded": "noop"}))
+                .unwrap_err()
+                .contains("delegate")
+        );
+        assert!(
+            validate_settings(&json!({"min_signal_kinds": 4294967297u64}))
+                .unwrap_err()
+                .contains("min_signal_kinds")
+        );
+        assert!(
+            validate_settings(&json!({"alert_message": "x".repeat(2000)}))
+                .unwrap_err()
+                .contains("1024")
+        );
+        assert!(
+            validate_settings(&json!({"webhook_url": null, "enabled": null, "email_to": null}))
+                .is_ok()
+        );
+        assert!(
+            validate_settings(&json!({
+                "webhook_url": "https://example.test/hook",
+                "webhook_format": "dingtalk",
+                "email_to": ["ops@example.com"],
+                "min_signaled_requests": 4
+            }))
+            .is_ok()
+        );
+    }
 
     #[test]
     fn manifest_parses_and_declares_permissions() {

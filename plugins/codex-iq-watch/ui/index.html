@@ -21,6 +21,12 @@
           <button class="btn primary" id="test-btn" type="button">发送测试通知</button>
         </div>
       </header>
+      <div class="filters">
+        <label class="field"><span>搜索账号</span><input id="account-search" type="search" placeholder="账号、Provider 或状态" /></label>
+        <label class="field"><span>状态</span><select id="account-status">
+          <option value="">全部</option><option value="degraded">降智</option><option value="suspect">疑似</option><option value="healthy">正常</option><option value="unobserved">未观察</option><option value="unknown">未知</option><option value="disabled">已停用</option>
+        </select></label>
+      </div>
       <div class="table-wrap">
         <table class="table">
           <thead>
@@ -50,6 +56,12 @@
           <p class="card-sub">跨账号的最近告警记录；同账号告警受冷却时间限制。</p>
         </div>
       </header>
+      <div class="filters">
+        <label class="field"><span>搜索告警</span><input id="alert-search" type="search" placeholder="账号或信号" /></label>
+        <label class="field"><span>投递结果</span><select id="alert-delivery">
+          <option value="">全部</option><option value="ok">全部成功</option><option value="unconfirmed">结果未确认</option><option value="failed">投递失败</option>
+        </select></label>
+      </div>
       <div class="table-wrap">
         <table class="table compact">
           <thead>
@@ -293,6 +305,18 @@
       </div>
     </div>
 
+    <dialog id="confirm-dialog" class="confirm-dialog" aria-labelledby="confirm-title" aria-describedby="confirm-message">
+      <header class="modal-head"><h3 id="confirm-title" class="card-title">确认操作</h3></header>
+      <div class="modal-body">
+        <p id="confirm-message"></p>
+        <p id="confirm-error" class="form-hint fail" role="alert"></p>
+      </div>
+      <footer class="modal-foot">
+        <span class="modal-foot-gap"></span>
+        <button id="confirm-cancel" class="btn" type="button" autofocus>取消</button>
+        <button id="confirm-accept" class="btn primary" type="button">确认</button>
+      </footer>
+    </dialog>
     <div class="toast" id="toast" role="status" hidden></div>
   </main>
   <script src="app.js"></script>

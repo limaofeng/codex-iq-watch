@@ -35,6 +35,7 @@
   var testResult = document.getElementById('test-result');
   var testAllBtn = document.getElementById('test-all-btn');
   var lastAccounts = [];
+  var lastAlerts = [];
   var lastModels = { keys: [], models: [] };
   var PREFERRED_MODEL = 'gpt-6-astra';
   var PREFERRED_EFFORT = 'low';
@@ -122,12 +123,35 @@
     return '<div class="account-name">' + esc(name) + '</div>' + idCell;
   }
 
+  function deliveryOutcome(alert) {
+    var deliveries = alert.deliveries || [];
+    if (!deliveries.length) return 'unconfirmed';
+    if (deliveries.some(function (d) { return d.ok; })) return 'ok';
+    if (deliveries.every(function (d) { return !d.ok && (d.detail || '').indexOf('未确认') >= 0; })) {
+      return 'unconfirmed';
+    }
+    return deliveries.every(function (d) { return d.ok; }) ? 'ok' : 'failed';
+  }
+
   function renderAccounts(accounts) {
-    if (!accounts.length) {
-      accountsBody.innerHTML = '<tr><td colspan="9" class="empty">暂无账号观察数据</td></tr>';
+    lastAccounts = accounts;
+    var keyword = (field('account-search').value || '').trim().toLowerCase();
+    var status = field('account-status').value;
+    var filtered = accounts.filter(function (account) {
+      if (status === 'disabled') {
+        if (account.enabled !== false) return false;
+      } else if (status && account.status !== status) return false;
+      if (!keyword) return true;
+      var text = [account.account_id, account.name, account.provider, account.model,
+        STATUS_LABELS[account.status] || account.status].join(' ').toLowerCase();
+      return text.indexOf(keyword) >= 0;
+    });
+    if (!filtered.length) {
+      accountsBody.innerHTML = '<tr><td colspan="9" class="empty">'
+        + (accounts.length ? '没有匹配的账号' : '暂无账号观察数据') + '</td></tr>';
       return;
     }
-    accountsBody.innerHTML = accounts.map(function (account) {
+    accountsBody.innerHTML = filtered.map(function (account) {
       var status = STATUS_LABELS[account.status] || account.status;
       var cls = account.status === 'degraded' ? 'degraded'
         : account.status === 'suspect' ? 'suspect'
@@ -167,9 +191,23 @@
   }
 
   function renderHistory(alerts) {
-    var list = (alerts || []).slice().reverse();
+    lastAlerts = alerts || [];
+    var list = lastAlerts.slice().reverse();
+    var keyword = (field('alert-search').value || '').trim().toLowerCase();
+    var delivery = field('alert-delivery').value;
+    list = list.filter(function (alert) {
+      if (delivery && deliveryOutcome(alert) !== delivery) return false;
+      if (!keyword) return true;
+      var verdict = alert.verdict || {};
+      var text = [alert.account_id, alert.account_name,
+        (verdict.signal_kinds || []).map(function (k) { return SIGNAL_LABELS[k] || k; }).join(' ')]
+        .join(' ').toLowerCase();
+      return text.indexOf(keyword) >= 0;
+    });
     if (!list.length) {
-      historyBody.innerHTML = '<tr><td colspan="4" class="empty">暂无告警；账号持续命中降智判定且过了冷却期才会记录</td></tr>';
+      historyBody.innerHTML = '<tr><td colspan="4" class="empty">'
+        + (lastAlerts.length ? '没有匹配的告警' : '暂无告警；账号持续命中降智判定且过了冷却期才会记录')
+        + '</td></tr>';
       return;
     }
     historyBody.innerHTML = list.map(function (alert) {
@@ -178,8 +216,9 @@
         return SIGNAL_LABELS[kind] || kind;
       }).join('、');
       var deliveries = (alert.deliveries || []).map(function (d) {
-        return '<span class="' + (d.ok ? 'ok' : 'fail') + '">'
-          + esc(d.channel) + (d.ok ? ' ✓' : ' ✗ ' + esc(d.detail))
+        var unknown = !d.ok && (d.detail || '').indexOf('未确认') >= 0;
+        return '<span class="' + (d.ok ? 'ok' : unknown ? 'muted' : 'fail') + '">'
+          + esc(d.channel) + (d.ok ? ' ✓' : unknown ? ' ？未确认' : ' ✗ ' + esc(d.detail))
           + '</span>';
       }).join('<br>') || '<span class="muted">未配置渠道</span>';
       return '<tr>'
@@ -251,9 +290,8 @@
       statusSub.textContent = total
         ? ('共 ' + total + ' 个账号（' + observed + ' 个已观察），' + degraded + ' 个降智')
         : '暂无账号；插件在后台持续统计请求终态';
-      if (data.accounts_error) {
-        statusSub.textContent += '；' + data.accounts_error;
-      }
+      if (data.accounts_error) statusSub.textContent += ' / ' + data.accounts_error;
+      if (data.storage_warning) statusSub.textContent += ' / ' + data.storage_warning;
     }).catch(function (error) {
       statusSub.textContent = '加载失败：' + error.message;
     });
@@ -281,24 +319,58 @@
     });
   }
 
+  var confirmDialog = field('confirm-dialog');
+  var confirmAction = null;
+  var confirmBusy = false;
+  var confirmFocus = null;
+  function askConfirm(title, message, action) {
+    if (confirmDialog.open || confirmBusy) return;
+    confirmFocus = document.activeElement;
+    confirmAction = action;
+    field('confirm-title').textContent = title;
+    field('confirm-message').textContent = message;
+    field('confirm-error').textContent = '';
+    confirmDialog.showModal();
+    field('confirm-cancel').focus();
+  }
+  confirmDialog.addEventListener('cancel', function (event) {
+    if (confirmBusy) event.preventDefault();
+  });
+  confirmDialog.addEventListener('close', function () {
+    confirmAction = null;
+    if (confirmFocus && confirmFocus.isConnected) confirmFocus.focus();
+  });
+  field('confirm-cancel').addEventListener('click', function () {
+    if (!confirmBusy) confirmDialog.close();
+  });
+  field('confirm-accept').addEventListener('click', async function () {
+    if (confirmBusy || !confirmAction) return;
+    confirmBusy = true;
+    field('confirm-cancel').disabled = true;
+    field('confirm-accept').disabled = true;
+    field('confirm-error').textContent = '';
+    try {
+      await confirmAction();
+      confirmDialog.close();
+    } catch (error) {
+      field('confirm-error').textContent = '操作失败：' + error.message;
+    } finally {
+      confirmBusy = false;
+      field('confirm-cancel').disabled = false;
+      field('confirm-accept').disabled = false;
+    }
+  });
+
   function clearAccount(accountId) {
     if (!accountId) return;
-    if (!window.confirm('清除该账号的窗口事件、判定计数与告警历史？监控会在下一次请求终态后重新开始。')) {
-      return;
-    }
-    request({
-      method: 'POST',
-      path: 'account-clear',
-      contentType: 'application/json',
-      body: JSON.stringify({ account: accountId }),
-    }).then(function () {
-      if (!detailCard.hidden && detailSub.textContent.indexOf(accountId) !== -1) {
-        detailCard.hidden = true;
-      }
+    askConfirm('清除账号记录', '清除该账号的窗口事件、判定计数与告警历史，并解除降智隔离，监控会在下一次请求终态后重新开始', async function () {
+      await request({
+        method: 'POST', path: 'account-clear', contentType: 'application/json',
+        body: JSON.stringify({ account: accountId }),
+      });
+      if (!detailCard.hidden && detailSub.textContent.indexOf(accountId) !== -1) detailCard.hidden = true;
       showToast('已清除账号观察记录', true);
       loadStatus();
-    }).catch(function (error) {
-      showToast('清除失败：' + error.message, false);
     });
   }
 
@@ -614,6 +686,8 @@
     }
   });
   document.addEventListener('keydown', function (event) {
+    // 顶层确认由 dialog 处理 Escape，不连带关闭下层设置页。
+    if (confirmDialog.open) return;
     if (event.key === 'Escape') {
       if (!settingsModal.hidden) closeSettings();
       if (!testModal.hidden) closeTest();
@@ -633,11 +707,8 @@
   testSend.addEventListener('click', runTest);
   testAllBtn.addEventListener('click', function () { openTest('', ''); });
   resetBtn.addEventListener('click', function () {
-    if (!window.confirm('恢复默认将删除本页保存的全部通知设置（含认证头），改回宿主配置。继续吗？')) {
-      return;
-    }
-    resetBtn.disabled = true;
-    request({
+    askConfirm('恢复默认设置', '删除本页保存的全部通知设置（含认证头），改回宿主配置', function () {
+    return request({
       method: 'POST',
       path: 'settings-reset',
       contentType: 'application/json',
@@ -647,14 +718,18 @@
       settingsHint.className = 'form-hint ok';
       settingsHint.textContent = '已恢复默认，改回宿主配置。';
       loadStatus();
-    }).catch(function (error) {
-      settingsHint.className = 'form-hint fail';
-      settingsHint.textContent = '恢复失败：' + error.message;
-    }).finally(function () {
-      resetBtn.disabled = false;
+    });
     });
   });
   detailClose.addEventListener('click', function () { detailCard.hidden = true; });
+  var filterApply = function () {
+    renderAccounts(lastAccounts);
+    renderHistory(lastAlerts);
+  };
+  field('account-search').addEventListener('input', filterApply);
+  field('account-status').addEventListener('change', filterApply);
+  field('alert-search').addEventListener('input', filterApply);
+  field('alert-delivery').addEventListener('change', filterApply);
   saveBtn.addEventListener('click', function (event) {
     event.preventDefault();
     saveSettings();
