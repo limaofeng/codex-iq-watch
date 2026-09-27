@@ -26,7 +26,7 @@ use crate::{
     config::WatchConfig,
     detector::{
         AccountState, AccountStatus, AlertRecord, CandyProbe, Delivery, apply_event, extract_event,
-        render_alert, should_alert,
+        migrate_detection_state, render_alert, should_alert,
     },
     notify::{Notice, deliver_all},
 };
@@ -492,13 +492,19 @@ async fn management_handle(
                 };
                 if state.status != AccountStatus::Degraded && state.status != AccountStatus::Suspect
                 {
-                    return json_response(
-                        200,
-                        json!({"ok": true, "status": status_label(state.status)}),
-                    );
+                    // 旧版判定语义下累计的状态先迁移再回答；迁移可能刚把它重置为健康。
+                    if !migrate_detection_state(&mut state) {
+                        return json_response(
+                            200,
+                            json!({"ok": true, "status": status_label(state.status)}),
+                        );
+                    }
+                } else {
+                    // 降智/疑似标记直接重置；旧语义留下的信号与连续判定一并作废。
+                    migrate_detection_state(&mut state);
+                    state.status = AccountStatus::Healthy;
+                    state.verdict_streak = 0;
                 }
-                state.status = AccountStatus::Healthy;
-                state.verdict_streak = 0;
                 let expected = (version != 0).then_some(version);
                 match store::save_account(&call.host, &state, expected).await {
                     Ok(_) => {

@@ -16,7 +16,7 @@ pub enum Signal {
     Overload,
     /// 之前该账号缓存持续命中，本次大输入请求命中突然归零。
     CacheCollapse,
-    /// 首 token 耗时超过阈值（降智的典型体感是迟迟不出字，而非整体慢）。
+    /// 上游首响应耗时超过阈值（降智的典型体感是迟迟不出字，而非整体慢）。
     SlowResponse,
 }
 
@@ -26,10 +26,15 @@ impl Signal {
         match self {
             Self::Overload => "上游容量类错误（502/503/529）",
             Self::CacheCollapse => "缓存命中骤降为零",
-            Self::SlowResponse => "首 token 耗时超过阈值",
+            Self::SlowResponse => "上游首响应耗时超过阈值",
         }
     }
 }
+
+/// 判定逻辑版本：信号语义变化时递增，落盘状态里的旧信号与连续判定随之作废。
+/// v2：引入采样窗口；v3：CacheCollapse 降级为辅助信号；v4：慢响应改用真实上游首响应指标
+/// （first_event_ms 在非流式路径是总耗时，不能再用作首 token 回退）。
+pub const LOGIC_VERSION: u32 = 4;
 
 /// 写入私有状态的一次请求事件；字段保持安全摘要，不含正文或凭据。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,6 +47,9 @@ pub struct RequestEvent {
     pub client_status: Option<u16>,
     pub error_code: Option<String>,
     pub latency_ms: Option<u64>,
+    /// 上游首响应耗时：流式取首 token，非流式没有首 token 概念，
+    /// 回退为上游处理耗时（provider_processing_ms），再回退为响应头耗时（headers_ms）。
+    /// 不能用 first_event_ms：非流式路径它在整包接收完成时赋值，等于总耗时。
     pub first_token_ms: Option<u64>,
     pub input_tokens: Option<u64>,
     pub cached_tokens: Option<u64>,
@@ -69,6 +77,9 @@ pub struct AccountState {
     /// 上一次窗口判定是否为降智结论；连续命中才升级告警。
     #[serde(default)]
     pub verdict_streak: u32,
+    /// 生成该状态所用判定逻辑版本；低于 LOGIC_VERSION 时信号与连续判定作废重算。
+    #[serde(default)]
+    pub logic_version: u32,
     #[serde(default)]
     pub status: AccountStatus,
     #[serde(default)]
@@ -151,6 +162,7 @@ impl AccountState {
             last_observed_at_ms: now_ms,
             events: Vec::new(),
             verdict_streak: 0,
+            logic_version: LOGIC_VERSION,
             status: AccountStatus::Unknown,
             last_alert_at_ms: 0,
             alerts: Vec::new(),
@@ -218,7 +230,12 @@ pub fn extract_event(
         .and_then(|timings| timings.latency_ms);
     let first_token_ms = usage
         .and_then(|usage| usage.timings.as_ref())
-        .and_then(|timings| timings.first_token_ms.or(timings.first_event_ms));
+        .and_then(|timings| {
+            timings
+                .first_token_ms
+                .or(timings.provider_processing_ms)
+                .or(timings.headers_ms)
+        });
     let input_tokens = usage.and_then(|usage| usage.input_tokens);
     let cached_tokens = usage.and_then(|usage| usage.cached_tokens);
 
@@ -301,11 +318,34 @@ pub fn cache_collapse_streak(events: &[RequestEvent], config: &WatchConfig) -> u
     streak
 }
 
-/// 响应变慢：只看首 token 耗时——降智的典型体感是迟迟不出字，
-/// 整体耗时（含正常的长生成）不再计入，避免把慢回答误判成降智。
+/// 响应变慢：只看上游首响应耗时——降智的典型体感是迟迟不出字，
+/// 整体耗时（含正常的长生成与非流式整包接收）不再计入，避免把慢回答误判成降智。
 #[must_use]
 pub fn is_slow(first_token_ms: Option<u64>, config: &WatchConfig) -> bool {
     first_token_ms.is_some_and(|value| value >= config.first_token_ms)
+}
+
+/// 判定语义升级后迁移落盘状态：旧信号与连续判定不再有效，从零重新累计。
+/// 事件序列保留（仍参与缓存骤降序列与界面展示），Degraded/Suspect 回到健康，
+/// 让下一批真实观察按新语义重新判定；返回是否发生了迁移。
+pub fn migrate_detection_state(state: &mut AccountState) -> bool {
+    if state.logic_version >= LOGIC_VERSION {
+        return false;
+    }
+    for event in &mut state.events {
+        event.signals.clear();
+    }
+    state.verdict_streak = 0;
+    // 被排除调度的账号按迁移重置回监控池，等价于一次自动恢复调度；
+    // 告警历史保留，重新降智时仍受冷却约束。
+    if matches!(
+        state.status,
+        AccountStatus::Degraded | AccountStatus::Suspect
+    ) {
+        state.status = AccountStatus::Healthy;
+    }
+    state.logic_version = LOGIC_VERSION;
+    true
 }
 
 /// 对最近采样事件做判定：带信号请求数与信号种类同时达标才算降智结论。
@@ -363,6 +403,8 @@ pub fn apply_event(
         .clone()
         .or_else(|| state.provider.take());
     state.model = event.model.clone().or_else(|| state.model.take());
+    // 判定语义变化后旧信号与连续判定作废，按新逻辑从零累计。
+    migrate_detection_state(state);
     // 基线一旦见过命中就保留，用于区分“骤降”与“从不缓存”。
     if event.cached_tokens.is_some_and(|cached| cached > 0) {
         state.cache_baseline_hit = true;
@@ -529,6 +571,103 @@ mod tests {
         assert!(is_slow(Some(10_001), &config));
         assert!(!is_slow(Some(9_999), &config));
         assert!(!is_slow(None, &config));
+    }
+
+    fn observation(timings: gateway_plugin_sdk::call::policy::RequestTimings) -> ObserveRequest {
+        ObserveRequest {
+            event_id: "e1".to_owned(),
+            request_id: "r1".to_owned(),
+            config_revision: 1,
+            operation: "generate".to_owned(),
+            client_key_id: None,
+            account_id: Some("acct".to_owned()),
+            upstream_model: None,
+            response_model: None,
+            service_tier: None,
+            requested_model: None,
+            provider: Some("openai".to_owned()),
+            completed_at_ms: 1,
+            terminal: None,
+            usage: Some(RequestUsage {
+                timings: Some(timings),
+                ..RequestUsage::default()
+            }),
+        }
+    }
+
+    #[test]
+    fn slow_response_uses_first_token_then_upstream_processing_then_headers() {
+        use gateway_plugin_sdk::call::policy::RequestTimings;
+        let config = config();
+        // 流式：首 token 优先，哪怕 first_event_ms（结构帧）很大也不覆盖。
+        let event = extract_event(
+            &observation(RequestTimings {
+                first_token_ms: Some(2_000),
+                first_event_ms: Some(60_000),
+                headers_ms: Some(1_000),
+                ..RequestTimings::default()
+            }),
+            &config,
+            false,
+        );
+        assert_eq!(event.first_token_ms, Some(2_000));
+        assert!(!event.signals.contains(&Signal::SlowResponse));
+        // 非流式：无首 token 时取上游处理耗时，不用 first_event_ms（整包接收≈总耗时）。
+        let event = extract_event(
+            &observation(RequestTimings {
+                first_event_ms: Some(60_000),
+                provider_processing_ms: Some(3_000),
+                headers_ms: Some(4_000),
+                latency_ms: Some(61_000),
+                ..RequestTimings::default()
+            }),
+            &config,
+            false,
+        );
+        assert_eq!(event.first_token_ms, Some(3_000));
+        assert!(!event.signals.contains(&Signal::SlowResponse));
+        // 非流式且无处理耗时：回退响应头耗时；总耗时再高也不误报。
+        let event = extract_event(
+            &observation(RequestTimings {
+                first_event_ms: Some(60_000),
+                headers_ms: Some(5_000),
+                latency_ms: Some(61_000),
+                ..RequestTimings::default()
+            }),
+            &config,
+            false,
+        );
+        assert_eq!(event.first_token_ms, Some(5_000));
+        assert!(!event.signals.contains(&Signal::SlowResponse));
+        // 上游真的慢（处理耗时超阈值）才计信号。
+        let event = extract_event(
+            &observation(RequestTimings {
+                provider_processing_ms: Some(11_000),
+                ..RequestTimings::default()
+            }),
+            &config,
+            false,
+        );
+        assert!(event.signals.contains(&Signal::SlowResponse));
+    }
+
+    #[test]
+    fn migration_clears_stale_signals_and_restores_degraded() {
+        let mut state = AccountState::new("acct", 0);
+        state.logic_version = 0;
+        state.status = AccountStatus::Degraded;
+        state.verdict_streak = 2;
+        state.events.push(event(1, &[Signal::SlowResponse]));
+        state.events.push(event(2, &[Signal::CacheCollapse]));
+        assert!(migrate_detection_state(&mut state));
+        assert_eq!(state.status, AccountStatus::Healthy);
+        assert_eq!(state.verdict_streak, 0);
+        assert_eq!(state.logic_version, LOGIC_VERSION);
+        assert!(state.events.iter().all(|event| event.signals.is_empty()));
+        // 事件序列保留，已迁移状态不重复迁移。
+        assert_eq!(state.events.len(), 2);
+        assert!(!migrate_detection_state(&mut state));
+        // 旧版缓存命中基线保留，继续用于骤降判定。
     }
 
     fn event(at_ms: u64, signals: &[Signal]) -> RequestEvent {
