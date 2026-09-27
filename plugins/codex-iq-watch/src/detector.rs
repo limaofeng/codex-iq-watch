@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::config::WatchConfig;
 
 /// 一次请求可能同时携带的信号；`Serialize` 供状态与管理页面复用。
+/// `CacheCollapse` 不直接出现在 event.signals——它是窗口级结论，由 evaluate 注入。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Signal {
@@ -225,9 +226,7 @@ pub fn extract_event(
     if is_overload(upstream_status, error_code.as_deref()) {
         signals.push(Signal::Overload);
     }
-    if is_cache_collapse(had_cache_hit, input_tokens, cached_tokens, config) {
-        signals.push(Signal::CacheCollapse);
-    }
+    // 缓存骤降是窗口级信号，需要事件序列判断，不由单次事件标记。
     if is_slow(first_token_ms, config) {
         signals.push(Signal::SlowResponse);
     }
@@ -275,17 +274,31 @@ pub fn is_overload(upstream_status: Option<u16>, error_code: Option<&str>) -> bo
     })
 }
 
-/// 缓存骤降：账号历史上命中过缓存，本次大输入请求命中归零。
+/// 统计窗口内连续大输入且缓存为 0 的事件数；阈值由配置控制，防止单次波动误报。
+/// 要求窗口内先有过缓存命中，再出现连续 ≥2 次零命中才算骤降。
 #[must_use]
-pub fn is_cache_collapse(
-    had_cache_hit: bool,
-    input_tokens: Option<u64>,
-    cached_tokens: Option<u64>,
-    config: &WatchConfig,
-) -> bool {
-    had_cache_hit
-        && input_tokens.is_some_and(|input| input >= config.cache_min_input_tokens)
-        && cached_tokens == Some(0)
+pub fn cache_collapse_streak(events: &[RequestEvent], config: &WatchConfig) -> u32 {
+    // 只在窗口内已有缓存命中基线的事件之后计数，避免冷启动噪声。
+    let mut seen_hit = false;
+    let mut streak = 0u32;
+    for event in events {
+        // 只有大输入请求参与缓存命中序列；不相关的小请求不重置归零计数。
+        let large_input = event
+            .input_tokens
+            .is_some_and(|input| input >= config.cache_min_input_tokens);
+        if !large_input {
+            continue;
+        }
+        if event.cached_tokens.is_some_and(|cached| cached > 0) {
+            seen_hit = true;
+            streak = 0;
+        } else if seen_hit && event.cached_tokens == Some(0) {
+            streak = streak.saturating_add(1);
+        } else {
+            streak = 0;
+        }
+    }
+    streak
 }
 
 /// 响应变慢：只看首 token 耗时——降智的典型体感是迟迟不出字，
@@ -295,14 +308,33 @@ pub fn is_slow(first_token_ms: Option<u64>, config: &WatchConfig) -> bool {
     first_token_ms.is_some_and(|value| value >= config.first_token_ms)
 }
 
-/// 对窗口内事件做判定：带信号请求数与信号种类同时达标才算降智结论。
+/// 对最近采样事件做判定：带信号请求数与信号种类同时达标才算降智结论。
+/// 只在最近 `sample_requests` 个事件内统计，防止老事件稀释当前判定。
+/// `CacheCollapse` 是辅助信号：窗口内先命中后连续归零，且同一采样内已有 `SlowResponse`
+/// 才计入信号种类；单独的零命中不足以判定降智。
 #[must_use]
 pub fn evaluate(events: &[RequestEvent], config: &WatchConfig) -> Verdict {
-    let signaled = events.iter().filter(|event| !event.signals.is_empty());
-    let signaled_requests = signaled.clone().count() as u32;
-    let kinds: BTreeSet<Signal> = signaled
+    let sample_size = config.sample_requests.clamp(4, 40) as usize;
+    let events = if events.len() > sample_size {
+        &events[events.len() - sample_size..]
+    } else {
+        events
+    };
+    let signaled: Vec<&RequestEvent> = events
+        .iter()
+        .filter(|event| !event.signals.is_empty())
+        .collect();
+    let signaled_requests = signaled.len() as u32;
+    let mut kinds: BTreeSet<Signal> = signaled
+        .iter()
         .flat_map(|event| event.signals.iter().copied())
         .collect();
+    // 缓存骤降需要 0 命中与慢响应同时存在才有意义。
+    let has_cache_collapse =
+        kinds.contains(&Signal::SlowResponse) && cache_collapse_streak(events, config) >= 2;
+    if has_cache_collapse {
+        kinds.insert(Signal::CacheCollapse);
+    }
     let last_signal_at_ms = events
         .iter()
         .rev()
@@ -382,12 +414,12 @@ pub fn render_alert(
     let label = state.display_label();
     let title = format!("Codex 降智告警：账号 {label} 疑似降智");
     let mut detail = format!(
-        "账号 {}（{}，Provider：{}，模型：{}）在 {} 分钟窗口内出现 {} 个带信号请求，命中信号：{}。判定已持续 {} 次。",
+        "账号 {}（{}，Provider：{}，模型：{}）在最近 {} 次请求采样内出现 {} 个带信号请求，命中信号：{}。判定已持续 {} 次。",
         label,
         state.account_id,
         state.provider.as_deref().unwrap_or("未知"),
         state.model.as_deref().unwrap_or("未知"),
-        config.window_ms / 60_000,
+        config.sample_requests,
         verdict.signaled_requests,
         kinds,
         state.verdict_streak,
@@ -422,16 +454,72 @@ mod tests {
         assert!(!is_overload(None, Some("invalid_request")));
     }
 
+    fn cache_event(at_ms: u64, input_tokens: u64, cached_tokens: u64) -> RequestEvent {
+        RequestEvent {
+            input_tokens: Some(input_tokens),
+            cached_tokens: Some(cached_tokens),
+            ..event(at_ms, &[])
+        }
+    }
+
     #[test]
-    fn cache_collapse_requires_baseline() {
+    fn cache_collapse_requires_sustained_zero_after_hit() {
         let config = config();
-        // 无历史命中不计骤降，避免冷启动误报。
-        assert!(!is_cache_collapse(false, Some(50_000), Some(0), &config));
-        assert!(is_cache_collapse(true, Some(50_000), Some(0), &config));
-        // 小输入不计。
-        assert!(!is_cache_collapse(true, Some(10), Some(0), &config));
-        // 命中大于零不算骤降。
-        assert!(!is_cache_collapse(true, Some(50_000), Some(10), &config));
+        // 窗口内没有命中基线：零命中不是骤降。
+        assert_eq!(
+            cache_collapse_streak(
+                &[cache_event(1, 50_000, 0), cache_event(2, 50_000, 0)],
+                &config
+            ),
+            0
+        );
+        // 一次命中后单次归零：不触发。
+        assert_eq!(
+            cache_collapse_streak(
+                &[cache_event(1, 50_000, 300), cache_event(2, 50_000, 0)],
+                &config
+            ),
+            1
+        );
+        // 一次命中后连续两次归零：触发骤降信号。
+        assert_eq!(
+            cache_collapse_streak(
+                &[
+                    cache_event(1, 50_000, 300),
+                    cache_event(2, 50_000, 0),
+                    cache_event(3, 50_000, 0)
+                ],
+                &config
+            ),
+            2
+        );
+        // 小输入事件被跳过而不是重置：hit,0,small0,0 → 连续 2 次大输入零命中。
+        assert_eq!(
+            cache_collapse_streak(
+                &[
+                    cache_event(1, 50_000, 300),
+                    cache_event(2, 50_000, 0),
+                    cache_event(3, 10, 0),
+                    cache_event(4, 50_000, 0)
+                ],
+                &config
+            ),
+            2
+        );
+        // 再次出现命中会重置归零计数。
+        assert_eq!(
+            cache_collapse_streak(
+                &[
+                    cache_event(1, 50_000, 300),
+                    cache_event(2, 50_000, 0),
+                    cache_event(3, 50_000, 100),
+                    cache_event(4, 50_000, 0),
+                    cache_event(5, 50_000, 0)
+                ],
+                &config
+            ),
+            2
+        );
     }
 
     #[test]
@@ -483,10 +571,68 @@ mod tests {
         );
         assert!(verdict.degraded);
         assert_eq!(verdict.signaled_requests, 2);
+        // Overload + SlowResponse = 2 种；CacheCollapse 是窗口级注入信号。
         assert_eq!(verdict.signal_kinds.len(), 3);
         // 只有一个带信号请求：不够。
         let verdict = evaluate(&[event(1, &[Signal::Overload]), event(2, &[])], &config);
         assert!(!verdict.degraded);
+    }
+
+    #[test]
+    fn evaluate_samples_only_recent_requests() {
+        let config = WatchConfig {
+            sample_requests: 4,
+            min_signaled_requests: 1,
+            min_signal_kinds: 1,
+            ..config()
+        };
+        // 6 个事件、采样上限 4：前两个带信号事件被剔除后不判定。
+        let events: Vec<RequestEvent> = vec![
+            event(1, &[Signal::Overload]),
+            event(2, &[Signal::Overload]),
+            event(3, &[]),
+            event(4, &[]),
+            event(5, &[]),
+            event(6, &[]),
+        ];
+        let verdict = evaluate(&events, &config);
+        assert!(!verdict.degraded);
+        assert_eq!(verdict.signaled_requests, 0);
+        // 采样内最后一条带信号即可触发（min_signaled_requests=1）。
+        let events = vec![
+            event(1, &[]),
+            event(2, &[]),
+            event(3, &[]),
+            event(4, &[]),
+            event(5, &[]),
+            event(6, &[Signal::SlowResponse]),
+        ];
+        assert!(evaluate(&events, &config).degraded);
+    }
+
+    #[test]
+    fn cache_collapse_needs_slow_response_to_count() {
+        let config = WatchConfig {
+            min_signaled_requests: 1,
+            min_signal_kinds: 2,
+            ..config()
+        };
+        let collapse_events = vec![
+            cache_event(1, 50_000, 300),
+            cache_event(2, 50_000, 0),
+            cache_event(3, 50_000, 0),
+        ];
+        // 只有骤降、没有慢响应：不判定（用户反馈的核心修复点）。
+        let verdict = evaluate(&collapse_events, &config);
+        assert!(!verdict.degraded);
+        assert!(verdict.signal_kinds.is_empty());
+        // 骤降 + 慢响应：两种信号，成立。
+        let mut events = collapse_events;
+        events.push(event(4, &[Signal::SlowResponse]));
+        let verdict = evaluate(&events, &config);
+        assert!(verdict.degraded);
+        assert!(verdict.signal_kinds.contains(&Signal::CacheCollapse));
+        assert!(verdict.signal_kinds.contains(&Signal::SlowResponse));
     }
 
     #[test]

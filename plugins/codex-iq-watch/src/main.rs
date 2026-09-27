@@ -374,6 +374,11 @@ async fn management_handle(
                     None => ("unobserved", None),
                 };
                 let enabled = runtime.get(&id).map(|account| account.enabled);
+                // 排除生效：已开启排除调度且该账号当前为 degraded（被过滤出候选）。
+                let excluded = app.config.schedule_exclude_degraded
+                    && states
+                        .get(&id)
+                        .is_some_and(|s| s.status == AccountStatus::Degraded);
                 accounts.push(json!({
                     "account_id": id,
                     "name": name,
@@ -382,6 +387,7 @@ async fn management_handle(
                     "model": state.and_then(|s| s.model.clone()),
                     "status": status,
                     "enabled": enabled,
+                    "excluded_from_schedule": excluded,
                     "verdict_streak": state.map_or(0, |s| s.verdict_streak),
                     "last_observed_at_ms": state.map_or(0, |s| s.last_observed_at_ms),
                     "last_alert_at_ms": state.map_or(0, |s| s.last_alert_at_ms),
@@ -457,6 +463,57 @@ async fn management_handle(
                 }
                 Err(error) => json_response(500, json!({"ok": false, "error": error.message})),
             }
+        }
+        // 恢复调度：清除降智/疑似标记但不删除观察历史，账号回到监控池继续被观察。
+        ("POST", "account-resume") => {
+            let incoming: serde_json::Value =
+                serde_json::from_slice(&call.payload).unwrap_or_else(|_| json!({}));
+            let account = incoming
+                .get("account")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            if account.is_empty() {
+                return json_response(400, json!({"ok": false, "error": "missing account"}));
+            }
+            for _ in 0..3 {
+                let Some((mut state, version)) = (match store::load_account(&call.host, &account)
+                    .await
+                {
+                    Ok(found) => found,
+                    Err(error) => {
+                        return json_response(500, json!({"ok": false, "error": error.message}));
+                    }
+                }) else {
+                    return json_response(
+                        404,
+                        json!({"ok": false, "error": "no state for this account"}),
+                    );
+                };
+                if state.status != AccountStatus::Degraded && state.status != AccountStatus::Suspect
+                {
+                    return json_response(
+                        200,
+                        json!({"ok": true, "status": status_label(state.status)}),
+                    );
+                }
+                state.status = AccountStatus::Healthy;
+                state.verdict_streak = 0;
+                let expected = (version != 0).then_some(version);
+                match store::save_account(&call.host, &state, expected).await {
+                    Ok(_) => {
+                        return json_response(200, json!({"ok": true, "status": "healthy"}));
+                    }
+                    Err(error) if error.code == ErrorCode::Conflict => continue,
+                    Err(error) => {
+                        return json_response(500, json!({"ok": false, "error": error.message}));
+                    }
+                }
+            }
+            json_response(
+                409,
+                json!({"ok": false, "error": "status write conflicted, retry"}),
+            )
         }
         ("GET", "models") => {
             // 汇总所有启用 Key 可见的模型；同时返回 Key 列表供管理页选择。
@@ -613,6 +670,7 @@ async fn management_handle(
                 "enabled",
                 "watch_providers",
                 "window_ms",
+                "sample_requests",
                 "cooldown_ms",
                 "first_token_ms",
                 "cache_min_input_tokens",
@@ -807,6 +865,7 @@ fn validate_settings(incoming: &serde_json::Value) -> Result<(), String> {
     // 数字字段：类型检查 + 与 normalized() 一致的范围校验。
     let numeric_fields: &[(&str, u64, u64)] = &[
         ("window_ms", 60_000, 3_600_000),
+        ("sample_requests", 4, 40),
         ("cooldown_ms", 60_000, 86_400_000),
         ("first_token_ms", 500, 120_000),
         ("latency_ms", 500, 120_000),
@@ -1274,6 +1333,11 @@ mod tests {
             validate_settings(&json!({"window_ms": 10_000}))
                 .unwrap_err()
                 .contains("window_ms")
+        );
+        assert!(
+            validate_settings(&json!({"sample_requests": 3}))
+                .unwrap_err()
+                .contains("sample_requests")
         );
         assert!(
             validate_settings(&json!({"enabled": "yes"}))

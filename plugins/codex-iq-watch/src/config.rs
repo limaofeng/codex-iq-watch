@@ -9,7 +9,10 @@ use serde_json::Value;
 pub struct WatchConfig {
     pub enabled: bool,
     pub watch_providers: Vec<String>,
+    /// 事件保留窗口（毫秒）；判定只在最近 `sample_requests` 次请求内做。
     pub window_ms: u64,
+    /// 判定采样上限：只用最近 N 次请求的信号做判断，防止老事件稀释。
+    pub sample_requests: u32,
     pub min_signaled_requests: u32,
     pub min_signal_kinds: u32,
     pub consecutive_triggers: u32,
@@ -42,6 +45,7 @@ impl Default for WatchConfig {
             enabled: true,
             watch_providers: vec!["openai".to_owned()],
             window_ms: 15 * 60 * 1000,
+            sample_requests: 15,
             min_signaled_requests: 2,
             min_signal_kinds: 2,
             consecutive_triggers: 2,
@@ -102,6 +106,7 @@ impl WatchConfig {
     #[must_use]
     pub fn normalized(mut self) -> Self {
         self.window_ms = self.window_ms.clamp(60_000, 3_600_000);
+        self.sample_requests = self.sample_requests.clamp(4, 40);
         self.cooldown_ms = self.cooldown_ms.clamp(60_000, 86_400_000);
         self.latency_ms = self.latency_ms.clamp(1_000, 600_000);
         self.first_token_ms = self.first_token_ms.clamp(1_000, 600_000);
@@ -173,6 +178,11 @@ impl WatchConfig {
         }
         if let Some(value) = settings.get("window_ms").and_then(Value::as_u64) {
             self.window_ms = value;
+        }
+        if let Some(value) = settings.get("sample_requests").and_then(Value::as_u64)
+            && let Ok(number) = u32::try_from(value)
+        {
+            self.sample_requests = number;
         }
         if let Some(value) = settings.get("cooldown_ms").and_then(Value::as_u64) {
             self.cooldown_ms = value;

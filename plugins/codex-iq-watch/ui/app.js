@@ -161,6 +161,7 @@
         + '<td>' + esc(account.provider || '—') + '</td>'
         + '<td>' + esc(account.model || '—') + '</td>'
         + '<td><span class="tag ' + cls + '">' + esc(status) + '</span>'
+        + (account.excluded_from_schedule ? '<span class="tag degraded" title="已从账号调度候选中排除，下一次请求不会使用它">已排除调度</span>' : '')
         + (account.enabled === false ? '<span class="tag">停用</span>' : '') + '</td>'
         + '<td>' + (account.signaled_events || 0) + ' / ' + (account.window_events || 0) + '</td>'
         + '<td>' + esc(formatMs(account.last_observed_at_ms)) + '</td>'
@@ -169,6 +170,9 @@
         + '<td>'
         + '<button class="btn link" data-test="' + esc(account.account_id) + '" data-name="' + esc(account.name || account.account_id) + '" type="button">测试</button>'
         + '<button class="btn link" data-account="' + esc(account.account_id) + '" data-name="' + esc(account.name || account.account_id) + '" type="button">详情</button>'
+        + (account.status === 'degraded' || account.status === 'suspect'
+          ? '<button class="btn link" data-resume="' + esc(account.account_id) + '" type="button">恢复调度</button>'
+          : '')
         + '<button class="btn link danger" data-clear="' + esc(account.account_id) + '" type="button">清除</button>'
         + '</td>'
         + '</tr>';
@@ -187,6 +191,23 @@
       button.addEventListener('click', function () {
         clearAccount(button.getAttribute('data-clear'));
       });
+    });
+    accountsBody.querySelectorAll('button[data-resume]').forEach(function (button) {
+      button.addEventListener('click', function () {
+        resumeAccount(button.getAttribute('data-resume'));
+      });
+    });
+  }
+
+  function resumeAccount(accountId) {
+    if (!accountId) return;
+    askConfirm('恢复调度', '将该账号状态重置为正常并重新加入调度候选（历史观察与告警保留）', async function () {
+      await request({
+        method: 'POST', path: 'account-resume', contentType: 'application/json',
+        body: JSON.stringify({ account: accountId }),
+      });
+      showToast('已恢复调度', true);
+      loadStatus();
     });
   }
 
@@ -589,6 +610,8 @@
     field('f-enabled').checked = effective.enabled !== false;
     field('f-watch-providers').value = (effective.watch_providers || []).join(', ');
     field('f-window-min').value = effective.window_ms ? Math.round(effective.window_ms / 60000) : '';
+    field('f-sample-requests').value = effective.sample_requests != null
+      ? effective.sample_requests : '';
     field('f-cooldown-min').value = effective.cooldown_ms ? Math.round(effective.cooldown_ms / 60000) : '';
     field('f-first-token-s').value = effective.first_token_ms ? (effective.first_token_ms / 1000) : '';
     field('f-cache-min-input').value = effective.cache_min_input_tokens != null
@@ -618,6 +641,7 @@
         ? providers.split(/[,\n]/).map(function (item) { return item.trim(); }).filter(Boolean)
         : [],
       window_ms: num('f-window-min', 60000),
+      sample_requests: num('f-sample-requests', 1),
       cooldown_ms: num('f-cooldown-min', 60000),
       first_token_ms: num('f-first-token-s', 1000),
       cache_min_input_tokens: num('f-cache-min-input', 1),
