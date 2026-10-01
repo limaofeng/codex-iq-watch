@@ -6,7 +6,7 @@ permissions:
 
 on:
   push:
-    branches: [main]
+    branches: [main, "release/codex-iq-watch-*"]
     tags: ["codex-iq-watch-*"]
   pull_request:
     paths: ["plugins/codex-iq-watch/**", ".github/workflows/codex-iq-watch.yml"]
@@ -26,16 +26,45 @@ env:
   TARGET: x86_64-unknown-linux-gnu
 
 jobs:
+  resolve:
+    runs-on: ubuntu-22.04
+    outputs:
+      ref: ${{ steps.source.outputs.ref }}
+      release_tag: ${{ steps.source.outputs.release_tag }}
+    steps:
+      - name: resolve source and release tag
+        id: source
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          SOURCE_REF: ${{ github.ref }}
+          SOURCE_REF_NAME: ${{ github.ref_name }}
+          INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          release_tag=""
+          case "$EVENT_NAME:$SOURCE_REF" in
+            workflow_dispatch:*) release_tag="$INPUT_RELEASE_TAG" ;;
+            push:refs/tags/*) release_tag="$SOURCE_REF_NAME" ;;
+            push:refs/heads/release/*) release_tag="${SOURCE_REF_NAME#release/}" ;;
+          esac
+          if [[ -n "$release_tag" ]]; then
+            [[ "$release_tag" == codex-iq-watch-* ]]
+            git check-ref-format "refs/tags/$release_tag"
+            SOURCE_REF="refs/tags/$release_tag"
+          fi
+          echo "ref=$SOURCE_REF" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
+
   check:
+    needs: resolve
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.release_tag && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
+          ref: ${{ needs.resolve.outputs.ref }}
       - name: check release version
-        if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
+        if: needs.resolve.outputs.release_tag != ''
         env:
-          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+          RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
         run: |
           version=$(python3 -c 'import json, os; print(json.load(open(os.environ["PLUGIN_DIR"] + "/plugin.json"))["version"])')
           [[ "$RELEASE_TAG" == "codex-iq-watch-$version" ]]
@@ -65,12 +94,12 @@ jobs:
           if-no-files-found: error
 
   package:
-    needs: check
+    needs: [resolve, check]
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.release_tag && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
+          ref: ${{ needs.resolve.outputs.ref }}
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.97.0"
@@ -99,11 +128,14 @@ jobs:
           path: ${{ env.PLUGIN_DIR }}/dist/
           if-no-files-found: error
       - name: release assets
-        if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
+        if: needs.resolve.outputs.release_tag != ''
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ inputs.release_tag || github.ref_name }}
+          tag_name: ${{ needs.resolve.outputs.release_tag }}
           body_path: release/notes.md
           draft: false
           prerelease: false
-          files: ${{ env.PLUGIN_DIR }}/dist/*
+          fail_on_unmatched_files: true
+          files: |
+            ${{ env.PLUGIN_DIR }}/dist/*.tar.gz
+            ${{ env.PLUGIN_DIR }}/dist/*.tar.gz.sha256

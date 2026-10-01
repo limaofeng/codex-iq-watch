@@ -24,4 +24,4 @@ cargo test --manifest-path plugins/codex-iq-watch/Cargo.toml --locked
 cargo build --manifest-path plugins/codex-iq-watch/Cargo.toml --release --locked --target x86_64-unknown-linux-gnu
 ```
 
-CI（`.github/workflows/codex-iq-watch.yml`）执行 fmt/clippy/test/Linux 构建并产出 `cpr-plugin` 归档；打 `codex-iq-watch-*` tag 会把归档挂到 Release。手动打包见 `scripts/package` 与各插件 README。
+CI（`.github/workflows/codex-iq-watch.yml`）执行 fmt/clippy/test/Linux 构建并产出 `cpr-plugin` 归档；打 `codex-iq-watch-*` tag 会把归档挂到 Release。已有 tag 可通过手动运行工作流并填写 `release_tag`，或推送 `release/<tag>` 分支恢复发布；构建始终检出对应 tag。手动打包见 `scripts/package` 与各插件 README。
