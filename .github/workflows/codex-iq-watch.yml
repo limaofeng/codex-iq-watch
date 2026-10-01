@@ -10,6 +10,12 @@ on:
     tags: ["codex-iq-watch-*"]
   pull_request:
     paths: ["plugins/codex-iq-watch/**", ".github/workflows/codex-iq-watch.yml"]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Existing plugin release tag"
+        required: true
+        type: string
 
 defaults:
   run:
@@ -24,6 +30,15 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
+      - name: check release version
+        if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+        run: |
+          version=$(python3 -c 'import json, os; print(json.load(open(os.environ["PLUGIN_DIR"] + "/plugin.json"))["version"])')
+          [[ "$RELEASE_TAG" == "codex-iq-watch-$version" ]]
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.97.0"
@@ -54,6 +69,8 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.97.0"
@@ -82,9 +99,10 @@ jobs:
           path: ${{ env.PLUGIN_DIR }}/dist/
           if-no-files-found: error
       - name: release assets
-        if: startsWith(github.ref, 'refs/tags/')
+        if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ inputs.release_tag || github.ref_name }}
           body_path: release/notes.md
           draft: false
           prerelease: false
