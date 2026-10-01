@@ -19,33 +19,34 @@
 
 `enabled=false` 时仍统计信号，不发送通知。
 
-缓存骤降信号已从"单次零命中"升级为"窗口内先命中后连续 ≥2 次大输入零命中"，避免上游 TTL 过期或会话轮换引起的单次波动误报。已判定降智的账号会在状态页显示「已排除调度」标签，并可通过「恢复调度」手动解除隔离（历史观察与告警保留）；`schedule_exclude_degraded` 默认关闭，开启后被排除账号不会再收到请求，需手动恢复。
+缓存骤降要求窗口内先命中后连续 ≥2 次大输入零命中，避免上游 TTL 过期或会话轮换引起的单次波动误报。已判定降智的账号会在状态页显示「已排除调度」标签，并可通过「恢复调度」手动解除隔离（历史观察与告警保留）；`schedule_exclude_degraded` 默认关闭，开启后被排除账号不会再收到请求，需手动恢复。
 
 页面保存设置时先做完整校验：非法类型、越界范围、无效 URL、错误认证头格式或超长字段返回 400 且不覆盖已保存配置；`null` 表示移除覆盖项，回到宿主配置。告警与各渠道「投递结果未确认」记录会先持久化，再发送并补写结果。宿主观察回调的总期限最多 2 秒，慢 Webhook／邮件 API 可能超时；中断或结果回写失败时保留未确认记录，不代表确定未送达，也不会自动重发，以免重复通知。冷却期仍生效，管理页测试通知使用管理调用，不能代替真实观察链路的时限验证。
 
 ## 调度避让（可选）
 
-插件声明了 `scheduler` 能力：开启后宿主每次为请求选账号时先回调插件，候选中被判定为「降智」（已触发告警）的账号会被排除，在剩余账号中按宿主内置同款次序（in_flight 最少、失败率最低、权重最大）挑一个。
+插件声明了 `scheduler` 能力：开启后宿主每次为请求选账号时先回调插件，候选中被判定为「降智」的账号会被排除，在剩余账号中按插件固定次序（in_flight 最少、失败率最低、权重最大、账号 ID 字典序）挑一个；该次序独立于宿主智能调度设置。
 
 启用两步：
 
 1. 实例配置 → 能力绑定中勾选「调度 · 账号调度」（失败策略建议 `delegate`：插件异常/超时时回退内置调度，不影响流量）；可按 Key／账号组／Provider／模型限定范围。
 2. 管理页「通知设置 → 检测参数」勾选「调度时排除降智账号」（对应配置 `schedule_exclude_degraded`，默认关闭；未绑定调度时该开关无效果）。
 
-- 「疑似」账号不排除，只排除已告警的「降智」账号。
+- 「疑似」账号不排除，只排除已判定为「降智」的账号。
 - 候选账号全部降智时按 `schedule_all_degraded` 处理：`delegate`（默认）交回内置调度、仍会用到降智账号但不断流；`reject` 直接拒绝该请求。管理页同位置可改。
 - 被排除的账号不参与调度便不会产生新观察记录，状态不会自动恢复；状态页「恢复调度」或「清除」可解除隔离（历史观察与告警保留）。
 
 ## 升级与判定迁移
 
-宿主以进程方式运行插件，更新安装包后需重启网关（或重载插件实例）新版本才生效；旧进程仍在运行时管理页会提示「请求未在当前插件版本中注册」。判定语义升级后，插件在下次观察时自动作废旧版累计的信号与连续判定（`logic_version`），事件与告警历史保留；未被排除的账号重新按新语义判定，开启调度排除的账号收不到观察，需点「恢复调度」解除隔离（该操作同样执行迁移，不会沿用旧信号）。
+需要宿主 `>=3.19.0, <4.0.0`。安装包上传后，在实例中切换到新版本才会生效；仅上传制品不切换实例。核对 `observer` 的 `request_completed` 绑定及其请求范围，旧的 `request_lifecycle`／`usage` 绑定不能直接用于当前合同。判定语义升级后，插件在下次观察时自动作废旧版累计的信号与连续判定（`logic_version`），事件与告警历史保留；未被排除的账号重新按新语义判定，开启调度排除的账号收不到观察，需点「恢复调度」解除隔离（该操作同样执行迁移，不会沿用旧信号）。
 
 ## 能力声明
 
-- `request_lifecycle` + `usage`：观察请求终态与用量（`policy.observe_request`）
+- `observer`：通过 `observer.observe` 消费 `request_completed` 的请求终态与用量；忽略 `websocket_response`，避免把单条 WS 帧计作一次请求
 - `scheduler`：账号调度阶段排除降智账号（`policy.schedule_account`，需实例绑定启用）
 - `management`：状态页（账号状态＋聚合告警历史＋信号详情）与 `status`/`events`/`alerts`/`settings`/`test-notify`/`account-clear`/`models`/`candy-test` 管理路由
-- 权限：`requests`（观察事实）、`network`（通知出站）、`accounts`（账号显示名解析）、`models`（糖果题测试）、`public_endpoints`（页面图标）
+
+清单不声明访问权限；安装并启用意味着完整信任插件代码。宿主回调仍受调用期限、取消、实例版本和状态 CAS 合同约束
 
 ## 账号显示名
 
@@ -57,7 +58,7 @@
 
 ## 糖果题测试
 
-管理页每行账号可发起「糖果题测试」（顶部也有全局入口，弹窗内可选账号与客户端 Key）：通过 `host.keys.list`/`host.models.list`/`host.model.execute`（`models` 权限）借用所选 Key 的身份、按账号发送一道推理题（正确答案 21）。弹窗内可选客户端 Key（模型下拉仅列该 Key 可见模型，默认选中 `gpt-6-astra`）与 reasoning effort（`low`/`medium`/`high`/`xhigh`/`max`，默认 `low`，`default` 为不指定），用于对比不同思考档位下的推理质量。结果（答对/答错/调用失败）写入账号 `last_probe` 并显示在「最近测试」列；这是主动探针，与信号窗口判定相互独立。
+管理页每行账号可发起「糖果题测试」（顶部也有全局入口，弹窗内可选账号与客户端 Key）：通过 `host.keys.list`/`host.models.list`/`host.model.execute` 借用所选 Key 的身份、按账号发送一道推理题（正确答案 21）。弹窗内可选客户端 Key（模型下拉仅列该 Key 可见模型，默认选中 `gpt-6-astra`）与 reasoning effort（`low`/`medium`/`high`/`xhigh`/`max`，默认 `low`，`default` 为不指定），用于对比不同思考档位下的推理质量。结果（答对/答错/调用失败）写入账号 `last_probe` 并显示在「最近测试」列；这是主动探针，与信号窗口判定相互独立。
 
 ## 构建
 
@@ -66,6 +67,6 @@ cargo test --manifest-path Cargo.toml --locked
 cargo build --manifest-path Cargo.toml --release --locked --target x86_64-unknown-linux-gnu
 ```
 
-SDK 未发布，`Cargo.toml` 固定引用宿主仓库 commit `zyycn/codex-proxy-rs@1c6b5a8f`；锁文件随仓库管理，构建需要 Rust ≥ 1.97（见 `rust-toolchain.toml`）。
+SDK 未独立发布，`Cargo.toml` 固定引用宿主发行标签 [`v3.19.0`](https://github.com/zyycn/codex-proxy-rs/releases/tag/v3.19.0)；锁文件随仓库管理，构建需要 Rust ≥ 1.97（见 `rust-toolchain.toml`）。
 
 打包见 `../../scripts/package`（`cpr-plugin package` 封装），或在 CI 打 `codex-iq-watch-*` tag 产出 Release 附件。

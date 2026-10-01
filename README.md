@@ -11,13 +11,13 @@ Codex Proxy RS（codex-proxy-rs）的独立网关插件集。插件通过公开 
 
 ## 契约版本
 
-- SDK `0.1.0`、`manifestVersion: 1`、进程协议 `1`
-- 目标宿主：`codex-proxy-rs >=3.15.0, <4.0.0`（以 `engines` 声明为准）
+- SDK `0.1.0`、`manifestVersion: 2`、进程协议 `2`
+- 目标宿主：`codex-proxy-rs >=3.19.0, <4.0.0`（以 `engines` 声明为准）
 - 宿主侧合同：`codex-proxy-rs/backend/crates/gateway-plugin/{sdk,runtime}`
 
 ## 构建
 
-插件只依赖公开 SDK。SDK 未独立发布，当前固定引用宿主仓库 commit（`zyycn/codex-proxy-rs@1c6b5a8f`），由 `Cargo.lock` 锁定，仓库可脱离本地并排目录独立构建。
+插件只依赖公开 SDK。SDK 未独立发布，当前固定引用宿主发行标签 [`v3.19.0`](https://github.com/zyycn/codex-proxy-rs/releases/tag/v3.19.0)，由 `Cargo.lock` 锁定到对应提交，仓库可脱离本地并排目录独立构建。
 
 ```bash
 cargo test --manifest-path plugins/codex-iq-watch/Cargo.toml --locked

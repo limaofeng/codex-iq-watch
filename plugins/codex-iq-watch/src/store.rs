@@ -96,7 +96,7 @@ pub async fn save_account(
         .map_err(|_| StateError::Invalid.fault())
 }
 
-/// 读取单个账号的宿主投影；需要 `accounts` 权限，无阶段限制。
+/// 读取单个账号的宿主投影，不读取账号凭据。
 /// 观察阶段用它把内部账号 ID 解析成显示名，失败时回退为内部 ID。
 pub async fn account_runtime(
     host: &HostClient,
@@ -367,7 +367,7 @@ pub async fn load_index(host: &HostClient) -> Result<Vec<serde_json::Value>, Plu
     })
 }
 
-/// 分页列出客户端 Key；需要 `models` 权限。测试执行借用这些 Key 的身份。
+/// 分页列出客户端 Key；测试执行借用这些 Key 的身份，不读取 Key 明文。
 pub async fn list_client_keys(host: &HostClient) -> Result<Vec<ClientKey>, PluginFault> {
     let mut keys = Vec::new();
     let mut cursor = None;

@@ -75,14 +75,13 @@ impl Host {
         };
         host.send(Frame::control(Message::Hello {
             handshake: Handshake {
-                protocol_version: 1,
+                protocol_version: gateway_plugin_sdk::PROTOCOL_VERSION,
                 artifact_sha256: "a".repeat(64),
                 plugin_id: "xunzhimeng.codex-iq-watch".into(),
                 instance_id: "test".into(),
                 generation: 1,
                 incarnation: "test".into(),
                 configuration,
-                permissions: manifest.permissions.into_iter().collect(),
                 contributes: manifest.contributes,
             },
         }));
@@ -116,6 +115,7 @@ impl Host {
                     incarnation: "test".into(),
                     stage,
                     timeout_ms: 5000,
+                    resource_stream: false,
                     resource_scope_id: format!("scope-{id}"),
                     request_id: None,
                     attempt_id: None,
@@ -206,11 +206,15 @@ fn account(id: &str) -> Value {
         "has_refresh_token":false,"access_token_expires_at_ms":null,"next_refresh_at_ms":null})
 }
 fn observe(host: &mut Host, id: u64, at: u64) {
-    host.call(id, Stage::Observation, "policy.observe_request", json!({}), json!({
-        "event_id":format!("event-{id}"),"request_id":format!("request-{id}"),"config_revision":1,
-        "operation":"generate","account_id":"account","provider":"openai","completed_at_ms":at,
-        "usage":{"timings":{"first_token_ms":20000}},
-    }));
+    host.call(id, Stage::Observation, "observer.observe", json!({
+        "event":"request_completed",
+        "data":{
+            "event_id":format!("event-{id}"),"request_id":format!("request-{id}"),"config_revision":1,
+            "operation":"generate","account_id":"account","provider":"openai","completed_at_ms":at,
+            "terminal":{"outcome":"succeeded","send_state":"not_sent","attempt_count":1},
+            "usage":{"timings":{"first_token_ms":20000}},
+        }
+    }), Value::Null);
 }
 
 #[test]
@@ -285,4 +289,43 @@ fn status_reads_unindexed_degraded_account_and_reports_retention_limit() {
             .contains("254")
     );
     assert_eq!(host.records["acct:a-100"].0["status"], "degraded");
+}
+
+#[test]
+fn websocket_events_do_not_create_request_observations() {
+    let mut host = Host::start(json!({}));
+    host.call(
+        1,
+        Stage::Observation,
+        "observer.observe",
+        json!({
+            "event": "websocket_response",
+            "data": {
+                "event_id": "ws-1", "request_id": "request-1", "config_revision": 1,
+                "operation": "generate", "protocol": "openai", "provider": "openai",
+                "attempt_index": 1, "sequence": 1, "payload_included": true,
+                "account_id": "account", "event_type": "response.completed"
+            }
+        }),
+        json!({"type": "response.completed"}),
+    );
+    host.finish(1);
+    assert!(host.records.is_empty());
+    assert_eq!(host.http_calls, 0);
+
+    observe(&mut host, 3, 2_000_000);
+    host.finish(3);
+    let state = &host.records["acct:account"].0;
+    assert_eq!(state["events"].as_array().unwrap().len(), 1);
+    assert_eq!(state["events"][0]["outcome"], "succeeded");
+    assert_eq!(state["events"][0]["first_token_ms"], 20_000);
+}
+
+#[test]
+fn unmatched_provider_completion_does_not_write_state() {
+    let mut host = Host::start(json!({"watch_providers": ["xai"]}));
+    observe(&mut host, 1, 2_000_000);
+    host.finish(1);
+    assert!(host.records.is_empty());
+    assert_eq!(host.http_calls, 0);
 }

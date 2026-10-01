@@ -10,7 +10,7 @@ checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 
 [[package]]
 name = "codex-iq-watch"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "gateway-plugin-sdk",
  "serde",
@@ -22,7 +22,7 @@ dependencies = [
 [[package]]
 name = "gateway-plugin-sdk"
 version = "0.1.0"
-source = "git+https://github.com/zyycn/codex-proxy-rs.git?rev=1c6b5a8f1045781d31a301382f1182f1a5657ec8#1c6b5a8f1045781d31a301382f1182f1a5657ec8"
+source = "git+https://github.com/zyycn/codex-proxy-rs.git?tag=v3.19.0#fef52b3717019513108733549508377a309f129d"
 dependencies = [
  "semver",
  "serde",

@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 
-use gateway_plugin_sdk::call::policy::{ObserveRequest, RequestOutcome, RequestUsage};
+use gateway_plugin_sdk::call::observation::{RequestCompleted, RequestOutcome};
 use serde::{Deserialize, Serialize};
 
 use crate::config::WatchConfig;
@@ -188,56 +188,39 @@ impl AccountState {
 /// 从终态观察提取本次事件与信号；`had_cache_hit` 由调用方传入该账号历史基线。
 #[must_use]
 pub fn extract_event(
-    observation: &ObserveRequest,
+    observation: &RequestCompleted,
     config: &WatchConfig,
     had_cache_hit: bool,
 ) -> RequestEvent {
-    let usage: Option<&RequestUsage> = observation.usage.as_ref();
-    let outcome = observation
-        .terminal
-        .as_ref()
-        .map(|terminal| outcome_name(&terminal.outcome))
-        .unwrap_or("unknown");
+    let usage = &observation.usage;
+    let outcome = outcome_name(&observation.terminal.outcome);
     let upstream_status = usage
-        .and_then(|usage| usage.failure.as_ref())
+        .failure
+        .as_ref()
         .and_then(|failure| failure.upstream_status_code)
-        .or_else(|| {
-            observation
-                .terminal
-                .as_ref()
-                .and_then(|terminal| terminal.client_status_code)
-        });
+        .or(observation.terminal.client_status_code);
     let client_status = usage
-        .and_then(|usage| usage.failure.as_ref())
+        .failure
+        .as_ref()
         .and_then(|failure| failure.client_status_code)
-        .or_else(|| {
-            observation
-                .terminal
-                .as_ref()
-                .and_then(|terminal| terminal.client_status_code)
-        });
+        .or(observation.terminal.client_status_code);
     let error_code = usage
-        .and_then(|usage| usage.failure.as_ref())
+        .failure
+        .as_ref()
         .and_then(|failure| failure.error_code.clone())
-        .or_else(|| {
-            observation
-                .terminal
-                .as_ref()
-                .and_then(|terminal| terminal.error_code.clone())
-        });
+        .or_else(|| observation.terminal.error_code.clone());
     let latency_ms = usage
-        .and_then(|usage| usage.timings.as_ref())
+        .timings
+        .as_ref()
         .and_then(|timings| timings.latency_ms);
-    let first_token_ms = usage
-        .and_then(|usage| usage.timings.as_ref())
-        .and_then(|timings| {
-            timings
-                .first_token_ms
-                .or(timings.provider_processing_ms)
-                .or(timings.headers_ms)
-        });
-    let input_tokens = usage.and_then(|usage| usage.input_tokens);
-    let cached_tokens = usage.and_then(|usage| usage.cached_tokens);
+    let first_token_ms = usage.timings.as_ref().and_then(|timings| {
+        timings
+            .first_token_ms
+            .or(timings.provider_processing_ms)
+            .or(timings.headers_ms)
+    });
+    let input_tokens = usage.input_tokens;
+    let cached_tokens = usage.cached_tokens;
 
     let mut signals = Vec::new();
     if is_overload(upstream_status, error_code.as_deref()) {
@@ -394,7 +377,7 @@ pub fn evaluate(events: &[RequestEvent], config: &WatchConfig) -> Verdict {
 pub fn apply_event(
     state: &mut AccountState,
     event: RequestEvent,
-    observation: &ObserveRequest,
+    observation: &RequestCompleted,
     config: &WatchConfig,
 ) -> Verdict {
     let now_ms = observation.completed_at_ms;
@@ -476,6 +459,7 @@ pub fn render_alert(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gateway_plugin_sdk::call::observation::RequestUsage;
 
     fn config() -> WatchConfig {
         WatchConfig::default()
@@ -573,8 +557,10 @@ mod tests {
         assert!(!is_slow(None, &config));
     }
 
-    fn observation(timings: gateway_plugin_sdk::call::policy::RequestTimings) -> ObserveRequest {
-        ObserveRequest {
+    fn observation(
+        timings: gateway_plugin_sdk::call::observation::RequestTimings,
+    ) -> RequestCompleted {
+        RequestCompleted {
             event_id: "e1".to_owned(),
             request_id: "r1".to_owned(),
             config_revision: 1,
@@ -587,17 +573,23 @@ mod tests {
             requested_model: None,
             provider: Some("openai".to_owned()),
             completed_at_ms: 1,
-            terminal: None,
-            usage: Some(RequestUsage {
+            terminal: gateway_plugin_sdk::call::observation::RequestTerminal {
+                outcome: RequestOutcome::Succeeded,
+                send_state: gateway_plugin_sdk::SendState::NotSent,
+                attempt_count: 1,
+                client_status_code: Some(200),
+                error_code: None,
+            },
+            usage: RequestUsage {
                 timings: Some(timings),
                 ..RequestUsage::default()
-            }),
+            },
         }
     }
 
     #[test]
     fn slow_response_uses_first_token_then_upstream_processing_then_headers() {
-        use gateway_plugin_sdk::call::policy::RequestTimings;
+        use gateway_plugin_sdk::call::observation::RequestTimings;
         let config = config();
         // 流式：首 token 优先，哪怕 first_event_ms（结构帧）很大也不覆盖。
         let event = extract_event(

@@ -16,7 +16,8 @@ use gateway_plugin_sdk::{
     ErrorCode, PluginFault,
     call::{
         management::{ManagementPage, ManagementRegistration, ManagementResource, ManagementRoute},
-        policy::{AccountScheduleRequest, ObserveRequest},
+        observation::{Event, RequestCompleted},
+        policy::AccountScheduleRequest,
     },
     client::{Empty, HostClient, PluginBuilder, SessionConfig, TypedCall, TypedReply, methods},
 };
@@ -69,7 +70,7 @@ async fn main() {
     });
 
     let plugin = match PluginBuilder::from_json(include_bytes!("../plugin.json"))
-        .and_then(|builder| builder.on(methods::OBSERVE_REQUEST, observe(app.clone())))
+        .and_then(|builder| builder.on(methods::OBSERVE, observe(app.clone())))
         .and_then(|builder| builder.on(methods::SCHEDULE_ACCOUNT, schedule(app.clone())))
         .and_then(|builder| builder.management(management_registration(), management(app.clone())))
         .and_then(|builder| builder.build())
@@ -89,8 +90,8 @@ type ManagementCall = TypedCall<gateway_plugin_sdk::call::management::Management
 type ManagementResult =
     Result<TypedReply<gateway_plugin_sdk::call::management::ManagementResponse>, PluginFault>;
 
-fn observe(app: Arc<App>) -> impl Fn(TypedCall<ObserveRequest>) -> BoxFuture<ObserveResult> {
-    move |call: TypedCall<ObserveRequest>| {
+fn observe(app: Arc<App>) -> impl Fn(TypedCall<Event>) -> BoxFuture<ObserveResult> {
+    move |call: TypedCall<Event>| {
         let app = Arc::clone(&app);
         Box::pin(async move { observe_request(&app, call).await })
     }
@@ -110,9 +111,11 @@ fn schedule(
 /// 观察结果不携带业务错误；内部失败只记录日志。
 async fn observe_request(
     app: &App,
-    call: TypedCall<ObserveRequest>,
+    call: TypedCall<Event>,
 ) -> Result<TypedReply<Empty>, PluginFault> {
-    let observation = call.request;
+    let Event::RequestCompleted(observation) = call.request else {
+        return Ok(TypedReply::new(Empty {}));
+    };
     let account_id = observation.account_id.clone().filter(|id| !id.is_empty());
     let Some(account_id) = account_id else {
         return Ok(TypedReply::new(Empty {}));
@@ -121,7 +124,7 @@ async fn observe_request(
     if !config.watches_provider(observation.provider.as_deref()) {
         return Ok(TypedReply::new(Empty {}));
     }
-    if let Err(error) = observe_inner(app, &call.host, &config, &account_id, observation).await {
+    if let Err(error) = observe_inner(app, &call.host, &config, &account_id, *observation).await {
         if error.code == ErrorCode::Capacity {
             app.storage_capacity_failed.store(true, Ordering::Relaxed);
         }
@@ -135,7 +138,7 @@ async fn observe_inner(
     host: &HostClient,
     config: &WatchConfig,
     account_id: &str,
-    observation: ObserveRequest,
+    observation: RequestCompleted,
 ) -> Result<(), PluginFault> {
     let now_ms = observation.completed_at_ms;
     let mut attempts = 0;
@@ -526,7 +529,7 @@ async fn management_handle(
             let Ok(keys) = store::list_client_keys(&call.host).await else {
                 return json_response(
                     200,
-                    json!({"models": [], "keys": [], "error": "无法读取客户端 Key 列表（需要 models 权限）"}),
+                    json!({"models": [], "keys": [], "error": "无法读取客户端 Key 列表"}),
                 );
             };
             let mut models = Vec::<serde_json::Value>::new();
@@ -781,6 +784,7 @@ fn json_response(
         TypedReply::new(gateway_plugin_sdk::call::management::ManagementResponse {
             status,
             content_type: "application/json".to_owned(),
+            headers: vec![],
         })
         .with_payload(serde_json::to_vec(&body).unwrap_or_default()),
     )
@@ -1286,7 +1290,7 @@ fn management_registration() -> ManagementRegistration {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gateway_plugin_sdk::{Capability, Manifest, Permission};
+    use gateway_plugin_sdk::{Capability, Manifest};
 
     #[test]
     fn unconfirmed_deliveries_are_persistable_for_all_configured_channels() {
@@ -1396,18 +1400,13 @@ mod tests {
     }
 
     #[test]
-    fn manifest_parses_and_declares_permissions() {
+    fn manifest_parses_and_declares_current_capabilities() {
         let manifest = Manifest::from_author_slice(include_bytes!("../plugin.json")).unwrap();
-        assert_eq!(manifest.manifest_version, 1);
-        assert!(manifest.permissions.contains(&Permission::Network));
-        assert!(manifest.permissions.contains(&Permission::Requests));
-        assert!(manifest.permissions.contains(&Permission::PublicEndpoints));
-        assert!(manifest.permissions.contains(&Permission::Accounts));
-        assert!(manifest.permissions.contains(&Permission::Models));
-        // 清单中保留 request lifecycle、usage、management 三类贡献点。
+        assert_eq!(manifest.manifest_version, 2);
+        // observer 接收完整请求终态，调度与管理能力沿用同一份清单。
         for capability in [
-            Capability::RequestLifecycle,
-            Capability::Usage,
+            Capability::Observer,
+            Capability::Scheduler,
             Capability::Management,
         ] {
             assert!(

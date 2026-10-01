@@ -1,18 +1,18 @@
 [package]
 name = "codex-iq-watch"
-version = "0.2.3"
+version = "0.2.4"
 edition = "2024"
 description = "Codex 降智监控插件：观察账号级信号并通过 Webhook/邮件 API 告警"
 license = "MIT"
 publish = false
 
 [dependencies]
-# SDK 尚未独立发布；固定到宿主仓库 commit，保证本仓库可脱离本地并排目录独立构建。
-gateway-plugin-sdk = { git = "https://github.com/zyycn/codex-proxy-rs.git", rev = "1c6b5a8f1045781d31a301382f1182f1a5657ec8", features = ["io"] }
+# SDK 尚未独立发布；固定到宿主发行标签，保证本仓库可脱离本地并排目录独立构建。
+gateway-plugin-sdk = { git = "https://github.com/zyycn/codex-proxy-rs.git", tag = "v3.19.0", features = ["io"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 thiserror = "2.0.18"
 tokio = { version = "1.52.3", default-features = false, features = ["io-std", "io-util", "macros", "rt-multi-thread", "sync", "time"] }
 
 [dev-dependencies]
-gateway-plugin-sdk = { git = "https://github.com/zyycn/codex-proxy-rs.git", rev = "1c6b5a8f1045781d31a301382f1182f1a5657ec8" }
+gateway-plugin-sdk = { git = "https://github.com/zyycn/codex-proxy-rs.git", tag = "v3.19.0" }

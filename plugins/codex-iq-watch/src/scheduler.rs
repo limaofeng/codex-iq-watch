@@ -13,7 +13,7 @@ use gateway_plugin_sdk::{
 
 use crate::{App, config::ScheduleFallback, detector::AccountStatus, effective_config, log, store};
 
-/// 调度回调：候选里有降智账号时，在剩余候选中按宿主同款次序挑一个 `Pick`；
+/// 调度回调：候选里有降智账号时，在剩余候选中按插件固定次序挑一个 `Pick`；
 /// 未启用、无需排除、读状态失败时一律 `Delegate`，保证关闭/故障时行为与内置调度一致。
 pub(crate) async fn schedule_account(
     app: &App,
@@ -47,7 +47,7 @@ pub(crate) async fn schedule_account(
     )))
 }
 
-/// 挑选决策：无排除项时交回内置调度；有排除项且仍有正常候选时按宿主内置同款
+/// 挑选决策：无排除项时交回内置调度；有排除项且仍有正常候选时按插件固定
 /// 次序（in_flight 最少、失败率最低、权重最大、ID 字典序）挑一个；全部被排除时
 /// 按配置回落（delegate 仍可用降智账号）或拒绝请求。
 fn decide(
