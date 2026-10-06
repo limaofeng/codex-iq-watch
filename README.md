@@ -6,7 +6,7 @@ Codex Proxy RS（codex-proxy-rs）的独立网关插件集。插件通过公开 
 
 | 目录 | 说明 |
 | --- | --- |
-| `plugins/codex-iq-watch` | Codex 降智监控插件：观察账号级信号（上游过载、缓存命中骤降、响应变慢），按窗口判定降智并通过 Webhook／邮件 HTTP API 告警 |
+| `plugins/codex-iq-watch` | Codex 降智监控插件：观察账号级信号（上游过载、缓存命中骤降、响应变慢），按窗口判定降智并告警，支持可维护题库、规则判分与 SVG 人工测试 |
 | `scripts/` | 打包等工程脚本（`cpr-plugin package` 封装） |
 
 ## 契约版本

@@ -16,7 +16,8 @@
         </div>
         <div class="actions">
           <button class="btn" id="refresh-btn" type="button">刷新</button>
-          <button class="btn" id="test-all-btn" type="button">糖果题测试</button>
+          <button class="btn" id="test-all-btn" type="button">模型测试</button>
+          <button class="btn" id="open-questions" type="button">题库</button>
           <button class="btn" id="open-settings" type="button">通知设置</button>
           <button class="btn primary" id="test-btn" type="button">发送测试通知</button>
         </div>
@@ -273,13 +274,12 @@
       <div class="modal-panel modal-narrow" role="dialog" aria-modal="true" aria-labelledby="test-title">
         <header class="modal-head">
           <div>
-            <h2 class="card-title" id="test-title">糖果题测试</h2>
+            <h2 class="card-title" id="test-title">模型测试</h2>
             <p class="card-sub" id="test-account-name"></p>
           </div>
           <button class="btn link modal-close" id="test-close" type="button" aria-label="关闭">✕</button>
         </header>
         <div class="modal-body">
-          <p class="card-sub question">向所选账号发送一道推理题（摸糖果保证数量，正确答案 21），用宿主嵌套模型调用、不占外部额度；模型答错或无输出可视为疑似降智的经验信号。</p>
           <div class="form-grid">
             <label class="field">
               <span>账号</span>
@@ -298,6 +298,7 @@
               <select id="test-effort"></select>
             </label>
           </div>
+          <label class="field"><span>题目</span><select id="test-question"></select></label>
           <p class="form-hint" id="test-models-hint"></p>
           <div class="probe-result" id="test-result"><span class="muted">尚未发送</span></div>
         </div>
@@ -306,6 +307,31 @@
           <button class="btn" type="button" data-close>关闭</button>
           <button class="btn primary" id="test-send" type="button">发送测试</button>
         </footer>
+      </div>
+    </div>
+
+    <div class="modal" id="questions-modal" hidden>
+      <div class="modal-mask" data-close></div>
+      <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="questions-title">
+        <header class="modal-head">
+          <h2 class="card-title" id="questions-title">题库</h2>
+          <button class="btn link modal-close" id="questions-close" type="button" aria-label="关闭">✕</button>
+        </header>
+        <div class="modal-body">
+          <div class="actions"><button class="btn" id="question-new" type="button">新增题目</button><button class="btn" id="questions-reload" type="button">刷新</button></div>
+          <div class="table-wrap"><table class="table compact"><thead><tr><th>题目</th><th>判分方式</th><th>状态</th><th>操作</th></tr></thead><tbody id="questions-body"></tbody></table></div>
+          <form id="question-form" class="form" hidden>
+            <label class="field"><span>标题</span><input id="question-title" required /></label>
+            <label class="field"><span>题目</span><textarea id="question-prompt" rows="6" required></textarea></label>
+            <div class="form-grid">
+              <label class="field"><span>判分方式</span><select id="question-grading"><option value="exact">规则判分</option><option value="manual">人工判断 SVG</option></select></label>
+              <label class="check"><input type="checkbox" id="question-enabled" /> 启用</label>
+            </div>
+            <label class="field" id="question-answers-field"><span>可接受答案（每行一个）</span><textarea id="question-answers" rows="3"></textarea></label>
+            <div class="actions"><button class="btn primary" id="question-save" type="button">保存题目</button><button class="btn" id="question-cancel" type="button">取消编辑</button></div>
+          </form>
+          <p class="form-hint" id="questions-hint" role="status"></p>
+        </div>
       </div>
     </div>
 

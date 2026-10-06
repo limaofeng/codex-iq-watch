@@ -99,7 +99,7 @@ pub struct AlertRecord {
     pub deliveries: Vec<Delivery>,
 }
 
-/// 最近一次糖果题探针结果；管理页测试直接驱动，不进入信号窗口。
+/// 旧糖果题记录的读取合同；新测试独立保存，不再写入监控状态。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CandyProbe {
     pub at_ms: u64,

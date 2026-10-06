@@ -3,8 +3,8 @@
   "name": "codex-iq-watch",
   "displayName": "Codex 降智监控",
   "publisher": "xunzhimeng",
-  "version": "0.2.4",
-  "description": "按账号观察上游过载、缓存命中骤降与首 token 变慢等降智信号，持续命中时通过 Webhook 或邮件 HTTP API 告警。",
+  "version": "0.3.0",
+  "description": "按账号监控降智信号并告警，提供可维护题库、规则判分与 SVG 人工测试",
   "license": "MIT",
   "author": "xunzhimeng",
   "engines": {
@@ -201,6 +201,26 @@
       "maximumRecords": 256,
       "maximumBytes": 4194304,
       "maximumValueBytes": 262144
+    },
+    {
+      "namespace": "questions",
+      "schemaVersion": 1,
+      "schema": {
+        "type": "object"
+      },
+      "maximumRecords": 1,
+      "maximumBytes": 262144,
+      "maximumValueBytes": 262144
+    },
+    {
+      "namespace": "probes",
+      "schemaVersion": 1,
+      "schema": {
+        "type": "object"
+      },
+      "maximumRecords": 254,
+      "maximumBytes": 16777216,
+      "maximumValueBytes": 65536
     }
   ]
 }

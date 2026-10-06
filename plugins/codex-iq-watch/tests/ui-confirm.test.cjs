@@ -73,3 +73,24 @@ test('账号错误与容量告警同时展示', async () => {
   assert.match(h.node('status-sub').textContent, /账号不可读/);
   assert.match(h.node('status-sub').textContent, /状态已满/);
 });
+
+
+test('隔离页面通过按钮保存题目，不依赖浏览器表单提交', async () => {
+  const h = setup(); await flush();
+  h.node('question-new').emit('click');
+  h.node('question-title').value = '测试题';
+  h.node('question-prompt').value = '只输出最终答案';
+  h.node('question-answers').value = '21\n22';
+  const saving = h.node('question-save').emit('click', {preventDefault() {}});
+  const sent = h.calls.find(call => call.path === 'question-save');
+  assert.equal(sent.method, 'POST');
+  const input = JSON.parse(sent.body);
+  assert.equal(input.expected_version, null);
+  assert.equal(input.question.title, '测试题');
+  assert.deepEqual(input.question.answers, ['21', '22']);
+  assert.equal(h.node('question-save').disabled, true);
+  h.send().resolve({questions:[{...input.question,id:'new',version:1}],version:1});
+  await saving;
+  assert.equal(h.node('question-form').hidden, true);
+  assert.equal(h.node('questions-hint').textContent, '已保存');
+});

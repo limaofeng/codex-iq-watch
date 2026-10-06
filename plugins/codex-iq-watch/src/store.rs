@@ -1,4 +1,4 @@
-//! 账号私有状态存取：`host.state.*`，命名空间 `watch`，键 `acct:<account_id>`。
+//! 私有状态访问与宿主事实查询；监控使用 `watch`，题库和测试使用各自命名空间。
 
 use std::collections::BTreeMap;
 
@@ -15,6 +15,95 @@ use gateway_plugin_sdk::{
 };
 
 use crate::detector::AccountState;
+
+/// 独立业务命名空间复用同一 CAS 合同，不读取或改写监控账号状态。
+pub async fn load_private<T: serde::de::DeserializeOwned>(
+    host: &HostClient,
+    namespace: &str,
+    key: &str,
+) -> Result<Option<(T, u64)>, PluginFault> {
+    let reply = host
+        .call(
+            "host.state.get",
+            serde_json::to_value(StateGetRequest {
+                namespace: namespace.into(),
+                key: key.into(),
+            })
+            .map_err(|_| StateError::Invalid.fault())?,
+            Vec::new(),
+        )
+        .await
+        .map_err(|e| e.into_plugin_fault())?;
+    let result: StateGetResult =
+        serde_json::from_value(reply.result).map_err(|_| StateError::Invalid.fault())?;
+    result
+        .record
+        .map(|record| {
+            serde_json::from_value(record.value)
+                .map(|value| (value, record.version))
+                .map_err(|_| StateError::Invalid.fault())
+        })
+        .transpose()
+}
+
+pub async fn save_private<T: serde::Serialize>(
+    host: &HostClient,
+    namespace: &str,
+    key: &str,
+    value: &T,
+    version: Option<u64>,
+    maximum_bytes: usize,
+) -> Result<u64, PluginFault> {
+    let value = serde_json::to_value(value).map_err(|_| StateError::Invalid.fault())?;
+    if serde_json::to_vec(&value)
+        .map_err(|_| StateError::Invalid.fault())?
+        .len()
+        > maximum_bytes
+    {
+        return Err(PluginFault::new(
+            ErrorCode::Capacity,
+            "记录超过存储大小限制",
+        ));
+    }
+    let reply = host
+        .call(
+            "host.state.put",
+            serde_json::to_value(StatePutRequest {
+                namespace: namespace.into(),
+                key: key.into(),
+                value,
+                expected_version: version,
+            })
+            .map_err(|_| StateError::Invalid.fault())?,
+            Vec::new(),
+        )
+        .await
+        .map_err(|e| e.into_plugin_fault())?;
+    serde_json::from_value::<gateway_plugin_sdk::call::host::StatePutResult>(reply.result)
+        .map(|reply| reply.version)
+        .map_err(|_| StateError::Invalid.fault())
+}
+
+pub async fn delete_private(
+    host: &HostClient,
+    namespace: &str,
+    key: &str,
+    version: u64,
+) -> Result<(), PluginFault> {
+    host.call(
+        "host.state.delete",
+        serde_json::to_value(StateDeleteRequest {
+            namespace: namespace.into(),
+            key: key.into(),
+            expected_version: version,
+        })
+        .map_err(|_| StateError::Invalid.fault())?,
+        Vec::new(),
+    )
+    .await
+    .map_err(|e| e.into_plugin_fault())?;
+    Ok(())
+}
 
 pub const NAMESPACE: &str = "watch";
 const INDEX_KEY: &str = "accounts";

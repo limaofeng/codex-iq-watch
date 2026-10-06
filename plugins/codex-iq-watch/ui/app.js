@@ -34,6 +34,12 @@
   var testSend = document.getElementById('test-send');
   var testResult = document.getElementById('test-result');
   var testAllBtn = document.getElementById('test-all-btn');
+  var library = { questions: [], version: null };
+  var editingQuestion = null;
+  var editingVersion = null;
+  var questionBusy = false;
+  var testBusy = false;
+  var probeView = 0;
   var lastAccounts = [];
   var lastAlerts = [];
   var lastModels = { keys: [], models: [] };
@@ -166,7 +172,7 @@
         + '<td>' + (account.signaled_events || 0) + ' / ' + (account.window_events || 0) + '</td>'
         + '<td>' + esc(formatMs(account.last_observed_at_ms)) + '</td>'
         + '<td>' + esc(account.last_alert_at_ms ? formatMs(account.last_alert_at_ms) : '—') + '</td>'
-        + '<td>' + renderProbeCell(account.last_probe) + '</td>'
+        + '<td>' + (account.probe_error ? '<span class="fail">' + esc(account.probe_error) + '</span>' : renderProbeCell(account.last_probe, account.account_id)) + '</td>'
         + '<td>'
         + '<button class="btn link" data-test="' + esc(account.account_id) + '" data-name="' + esc(account.name || account.account_id) + '" type="button">测试</button>'
         + '<button class="btn link" data-account="' + esc(account.account_id) + '" data-name="' + esc(account.name || account.account_id) + '" type="button">详情</button>'
@@ -186,6 +192,9 @@
       button.addEventListener('click', function () {
         openTest(button.getAttribute('data-test'), button.getAttribute('data-name'));
       });
+    });
+    accountsBody.querySelectorAll('button[data-probe]').forEach(function (button) {
+      button.addEventListener('click', function () { openTest(button.getAttribute('data-probe')); });
     });
     accountsBody.querySelectorAll('button[data-clear]').forEach(function (button) {
       button.addEventListener('click', function () {
@@ -384,7 +393,7 @@
 
   function clearAccount(accountId) {
     if (!accountId) return;
-    askConfirm('清除账号记录', '清除该账号的窗口事件、判定计数与告警历史，并解除降智隔离，监控会在下一次请求终态后重新开始', async function () {
+    askConfirm('清除账号记录', '清除该账号的观察、告警与测试记录，并解除降智隔离', async function () {
       await request({
         method: 'POST', path: 'account-clear', contentType: 'application/json',
         body: JSON.stringify({ account: accountId }),
@@ -397,19 +406,204 @@
 
   function read(id) { return field(id).value.trim(); }
 
-  function renderProbeCell(probe) {
-    if (!probe || !probe.at_ms) {
-      return '<span class="muted">—</span>';
+  function probeLabel(probe) {
+    if (probe.result === 'correct') return '正确';
+    if (probe.result === 'degraded' || probe.result === 'wrong') return '降智';
+    if (probe.execution === 'succeeded') return '未评价';
+    return '测试失败';
+  }
+
+  function renderProbeCell(probe, account) {
+    if (!probe || !probe.at_ms) return '<span class="muted">—</span>';
+    return '<button class="btn link" data-probe="' + esc(account) + '" type="button">' + esc(probeLabel(probe)) + '</button>'
+      + '<span class="muted small">' + esc(formatMs(probe.at_ms)) + '</span>'
+      + '<div class="muted small">' + esc(probe.title || '糖果题') + ' · ' + esc(probe.model || '')
+      + (probe.effort ? ' · ' + esc(probe.effort) : '') + '</div>';
+  }
+
+  function updateTestReady() {
+    testSend.disabled = testBusy || testModel.disabled || !testAccountSelect.value || !testKey.value
+      || !library.questions.some(function (q) { return q.enabled; });
+  }
+
+  function fillQuestions() {
+    var select = field('test-question');
+    var previous = select.value;
+    var enabled = library.questions.filter(function (q) { return q.enabled; });
+    select.innerHTML = enabled.length
+      ? '<option value="">随机一题</option>' + enabled.map(function (q) {
+        return '<option value="' + esc(q.id) + '">' + esc(q.title) + (q.grading === 'manual' ? ' · SVG' : '') + '</option>';
+      }).join('') : '<option value="">没有启用的题目</option>';
+    select.value = enabled.some(function (q) { return q.id === previous; }) ? previous : '';
+    select.disabled = !enabled.length || testBusy;
+    updateTestReady();
+  }
+
+  function loadQuestions() {
+    return request({ method: 'GET', path: 'questions' }).then(function (data) {
+      library = data;
+      fillQuestions();
+      renderQuestions();
+    });
+  }
+
+  function renderQuestions() {
+    var body = field('questions-body');
+    body.innerHTML = library.questions.length ? library.questions.map(function (q) {
+      return '<tr><td>' + esc(q.title) + ' <span class="muted small">v' + q.version + '</span></td><td>'
+        + (q.grading === 'manual' ? '人工判断 SVG' : '规则判分') + '</td><td>' + (q.enabled ? '启用' : '停用')
+        + '</td><td><button class="btn link" data-edit-question="' + esc(q.id) + '" type="button">编辑</button>'
+        + '<button class="btn link danger" data-delete-question="' + esc(q.id) + '" type="button">删除</button></td></tr>';
+    }).join('') : '<tr><td colspan="4" class="empty">暂无题目</td></tr>';
+    body.querySelectorAll('[data-edit-question]').forEach(function (button) {
+      button.disabled = questionBusy;
+      button.addEventListener('click', function () { editQuestion(library.questions.find(function (q) { return q.id === button.getAttribute('data-edit-question'); })); });
+    });
+    body.querySelectorAll('[data-delete-question]').forEach(function (button) {
+      button.disabled = questionBusy;
+      button.addEventListener('click', function () {
+        var id = button.getAttribute('data-delete-question');
+        var version = library.version;
+        askConfirm('删除题目', '删除后无法恢复，已保存的测试结果保留', async function () {
+          await mutateQuestion('question-delete', { id: id, expected_version: version });
+        });
+      });
+    });
+  }
+
+  function editQuestion(q) {
+    if (questionBusy) return;
+    editingQuestion = q ? q.id : null;
+    editingVersion = library.version;
+    field('question-title').value = q ? q.title : '';
+    field('question-prompt').value = q ? q.prompt : '';
+    field('question-grading').value = q ? q.grading : 'exact';
+    field('question-enabled').checked = q ? q.enabled : true;
+    field('question-answers').value = q ? q.answers.join('\n') : '';
+    field('question-form').hidden = false;
+    field('question-answers-field').hidden = field('question-grading').value === 'manual';
+    field('questions-hint').textContent = '';
+    field('question-title').focus();
+  }
+
+  async function mutateQuestion(path, data) {
+    if (questionBusy) return;
+    questionBusy = true;
+    field('question-save').disabled = true;
+    field('question-new').disabled = true;
+    field('questions-reload').disabled = true;
+    renderQuestions();
+    try {
+      library = await request({ method: 'POST', path: path, contentType: 'application/json', body: JSON.stringify(data) });
+      field('question-form').hidden = true;
+      fillQuestions();
+      field('questions-hint').textContent = '已保存';
+    } finally {
+      questionBusy = false;
+      field('question-save').disabled = false;
+      field('question-new').disabled = false;
+      field('questions-reload').disabled = false;
+      renderQuestions();
     }
-    var cls = probe.result === 'correct' ? 'ok' : 'fail';
-    var text = probe.result === 'correct' ? '答对' : (probe.result === 'wrong' ? '答错' : '失败');
-    var spec = esc(probe.model || '') + (probe.effort ? ' · effort=' + esc(probe.effort) : '');
-    return '<span class="' + cls + '" title="' + esc(probe.detail || '') + '">'
-      + esc(text) + '</span> <span class="muted small">' + esc(formatMs(probe.at_ms)) + '</span>'
-      + '<div class="muted small">' + spec + '</div>';
+  }
+
+  field('open-questions').addEventListener('click', function () {
+    field('questions-modal').hidden = false;
+    field('question-form').hidden = true;
+    field('questions-hint').textContent = '加载中…';
+    loadQuestions().then(function () { field('questions-hint').textContent = ''; }).catch(function (error) { field('questions-hint').textContent = error.message; });
+  });
+  field('questions-close').addEventListener('click', function () { field('questions-modal').hidden = true; });
+  field('questions-modal').addEventListener('click', function (event) {
+    if (event.target && event.target.hasAttribute('data-close')) field('questions-modal').hidden = true;
+  });
+  field('questions-reload').addEventListener('click', function () {
+    loadQuestions().then(function () { field('question-form').hidden = true; field('questions-hint').textContent = ''; }).catch(function (error) { field('questions-hint').textContent = error.message; });
+  });
+  field('question-new').addEventListener('click', function () { editQuestion(null); });
+  field('question-cancel').addEventListener('click', function () { field('question-form').hidden = true; });
+  field('question-grading').addEventListener('change', function () { field('question-answers-field').hidden = field('question-grading').value === 'manual'; });
+  field('question-save').addEventListener('click', async function (event) {
+    event.preventDefault();
+    var grading = field('question-grading').value;
+    try {
+      await mutateQuestion('question-save', { expected_version: editingVersion, question: {
+        id: editingQuestion, title: field('question-title').value, prompt: field('question-prompt').value,
+        enabled: field('question-enabled').checked, grading: grading,
+        answers: grading === 'manual' ? [] : field('question-answers').value.split('\n').filter(function (line) { return line.trim(); }),
+      } });
+    } catch (error) { field('questions-hint').textContent = error.message; }
+  });
+
+  function showProbe(data) {
+    var probe = data.probe;
+    if (!probe) {
+      testResult.innerHTML = data.legacy ? '<span>' + esc(probeLabel(data.legacy)) + ' · 糖果题</span><p class="muted">旧测试没有保存模型回答</p>' : '<span class="muted">尚未测试</span>';
+      return;
+    }
+    testResult.innerHTML = '<strong>' + esc(probe.question.title) + ' · v' + probe.question.version + '</strong>'
+      + '<p>' + esc(probeLabel(probe)) + (probe.detail ? ' · ' + esc(probe.detail) : '') + '</p>'
+      + '<p class="muted small">' + esc(probe.model) + (probe.effort ? ' · ' + esc(probe.effort) : '') + ' · ' + esc(formatMs(probe.at_ms)) + '</p>'
+      + '<details><summary>测试题目</summary><pre class="probe-excerpt">' + esc(probe.question.prompt) + '</pre></details>';
+    if (!data.recorded) {
+      var warning = document.createElement('p');
+      warning.className = 'fail';
+      warning.textContent = '结果未保存：' + (data.storage_error || '未知错误');
+      testResult.appendChild(warning);
+    }
+    var preview = data.preview || {};
+    if (preview.svg) {
+      var image = document.createElement('img');
+      image.className = 'probe-svg';
+      image.alt = probe.question.title;
+      var bytes = new TextEncoder().encode(preview.svg);
+      var binary = '';
+      bytes.forEach(function (byte) { binary += String.fromCharCode(byte); });
+      image.src = 'data:image/svg+xml;base64,' + window.btoa(binary);
+      image.addEventListener('error', function () { image.hidden = true; var error = document.createElement('p'); error.className = 'fail'; error.textContent = 'SVG 显示失败，请查看原始回答'; image.after(error); });
+      testResult.appendChild(image);
+    } else if (preview.preview_error) {
+      var error = document.createElement('p'); error.className = 'fail'; error.textContent = preview.preview_error; testResult.appendChild(error);
+    }
+    var details = document.createElement('details');
+    details.open = probe.question.grading === 'exact' || !preview.svg;
+    var summary = document.createElement('summary'); summary.textContent = '模型回答';
+    var source = document.createElement('pre'); source.className = 'probe-excerpt mono'; source.textContent = probe.output;
+    details.appendChild(summary); details.appendChild(source); testResult.appendChild(details);
+    if (probe.question.grading === 'manual' && probe.execution === 'succeeded') {
+      var actions = document.createElement('div'); actions.className = 'actions';
+      ['correct', 'degraded'].forEach(function (result) {
+        var button = document.createElement('button'); button.type = 'button'; button.className = 'btn' + (probe.result === result ? ' primary' : '');
+        button.textContent = result === 'correct' ? '正确' : '降智'; button.disabled = !data.recorded;
+        button.addEventListener('click', async function () {
+          var view = probeView;
+          actions.querySelectorAll('button').forEach(function (b) { b.disabled = true; });
+          try {
+            var updated = await request({ method: 'POST', path: 'probe-verdict', contentType: 'application/json', body: JSON.stringify({ account: probe.account, id: probe.id, expected_version: data.version, result: result }) });
+            if (view === probeView) showProbe(updated);
+            loadStatus();
+          } catch (error) {
+            showToast(error.message, false);
+            actions.querySelectorAll('button').forEach(function (b) { b.disabled = false; });
+          }
+        });
+        actions.appendChild(button);
+      });
+      testResult.appendChild(actions);
+    }
+  }
+
+  function loadProbe() {
+    var account = testAccountSelect.value;
+    var view = ++probeView;
+    testResult.innerHTML = '<span class="muted">加载测试记录…</span>';
+    request({ method: 'GET', path: 'probe', query: 'account=' + encodeURIComponent(account) }).then(function (data) {
+      if (view === probeView) showProbe(data);
+    }).catch(function (error) { if (view === probeView) testResult.innerHTML = '<span class="fail">' + esc(error.message) + '</span>'; });
   }
 
   function openTest(accountId, label) {
+    if (testBusy) { testModal.hidden = false; return; }
     testResult.innerHTML = '<span class="muted">尚未发送</span>';
     testModal.hidden = false;
     fillTestAccounts(lastAccounts, accountId);
@@ -418,6 +612,7 @@
       request({ method: 'GET', path: 'status' }).then(function (data) {
         lastAccounts = data.accounts || [];
         fillTestAccounts(lastAccounts, accountId);
+        if (testAccountSelect.value) loadProbe();
       });
     }
     var current = lastAccounts.filter(function (a) { return a.account_id === testAccountSelect.value; })[0];
@@ -425,6 +620,8 @@
       ? ((current.name || current.account_id) + '（' + current.account_id + '）')
       : (label || '选择账号');
     loadModels();
+    loadQuestions().catch(function (error) { testSend.disabled = true; testResult.innerHTML = '<span class="fail">题库加载失败：' + esc(error.message) + '</span>'; });
+    if (testAccountSelect.value) loadProbe();
   }
 
   function fillTestAccounts(accounts, preferId) {
@@ -450,6 +647,8 @@
     testAccountName.textContent = current
       ? ((current.name || current.account_id) + '（' + current.account_id + '）')
       : testAccountSelect.value;
+    loadProbe();
+    updateTestReady();
   });
 
   function closeTest() {
@@ -466,6 +665,7 @@
     }
     testModelsHint.textContent = '正在加载 Key 与模型…';
     testModel.disabled = true;
+    updateTestReady();
     request({ method: 'GET', path: 'models' }).then(function (data) {
       lastModels = data;
       fillKeys();
@@ -503,6 +703,7 @@
     if (!names.length) {
       testModel.innerHTML = '<option value="">没有可用模型</option>';
       testModel.disabled = true;
+      updateTestReady();
       testModelsHint.textContent = (lastModels && lastModels.error)
         || '没有可用模型；请先在宿主配置客户端 Key 与账号';
       return;
@@ -512,45 +713,35 @@
     }).join('');
     var want = preferModel || PREFERRED_MODEL;
     testModel.value = names.indexOf(want) !== -1 ? want : names[0];
-    testModel.disabled = false;
+    testModel.disabled = testBusy;
+    updateTestReady();
     testModelsHint.textContent = '经所选 Key 发送；模型范围为该 Key 可见列表';
   }
 
-  function runTest() {
-    var model = testModel.value;
+  async function runTest() {
+    if (testBusy) return;
     var account = testAccountSelect.value;
-    if (!account) {
-      testResult.innerHTML = '<span class="fail">请先选择账号</span>';
+    if (!account || !testModel.value || !testKey.value || !library.questions.some(function (q) { return q.enabled; })) {
+      testResult.innerHTML = '<span class="fail">请选择账号、Key、模型和启用题目</span>';
       return;
     }
-    if (!model) {
-      testResult.innerHTML = '<span class="fail">请先选择模型</span>';
-      return;
-    }
-    var key = testKey.value;
-    var effort = testEffort.value;
-    var effortHint = effort && effort !== 'default' ? '（effort=' + esc(effort) + '）' : '';
-    testSend.disabled = true;
-    testResult.innerHTML = '<span class="muted">发送中：经 ' + esc(model) + effortHint + ' 提问糖果题（正确答案 21），最长可能需要数十秒…</span>';
-    request({
-      method: 'POST',
-      path: 'candy-test',
-      contentType: 'application/json',
-      body: JSON.stringify({ account: account, model: model, key: key, effort: effort }),
-    }).then(function (data) {
-      var cls = data.result === 'correct' ? 'ok' : 'fail';
-      var label = data.result === 'correct' ? '答对 ✓' : (data.result === 'wrong' ? '答错 ✗' : '调用失败');
-      var html = '<span class="' + cls + '">' + esc(label) + '</span> ' + esc(data.detail || '');
-      if (data.excerpt) {
-        html += '<div class="probe-excerpt mono">' + esc(data.excerpt) + '</div>';
-      }
-      testResult.innerHTML = html;
+    var view = ++probeView;
+    testBusy = true;
+    [testAccountSelect, testKey, testModel, testEffort, field('test-question'), testSend].forEach(function (node) { node.disabled = true; });
+    testResult.innerHTML = '<span class="muted">测试中…</span>';
+    try {
+      var data = await request({ method: 'POST', path: 'probe-run', contentType: 'application/json', body: JSON.stringify({
+        account: account, model: testModel.value, key: testKey.value, effort: testEffort.value, question_id: field('test-question').value || null,
+      }) });
+      if (view === probeView) showProbe(data);
       loadStatus();
-    }).catch(function (error) {
-      testResult.innerHTML = '<span class="fail">测试失败：' + esc(error.message) + '</span>';
-    }).finally(function () {
-      testSend.disabled = false;
-    });
+    } catch (error) {
+      if (view === probeView) testResult.innerHTML = '<span class="fail">测试失败：' + esc(error.message) + '</span>';
+    } finally {
+      testBusy = false;
+      [testAccountSelect, testKey, testModel, testEffort].forEach(function (node) { node.disabled = false; });
+      fillQuestions();
+    }
   }
 
   function setTab(name) {
@@ -715,6 +906,7 @@
     if (event.key === 'Escape') {
       if (!settingsModal.hidden) closeSettings();
       if (!testModal.hidden) closeTest();
+      if (!field('questions-modal').hidden) field('questions-modal').hidden = true;
     }
   });
   document.querySelectorAll('.settings-tabs button').forEach(function (button) {

@@ -355,3 +355,12 @@ body {
   .actions { flex-wrap: wrap; }
   .filters .field { flex-basis: 100%; max-width: none; }
 }
+
+/* SVG 按图片展示，生成源码不进入管理页面 DOM */
+.probe-svg { display: block; width: 100%; height: auto; max-height: 420px; object-fit: contain; background: #fff; border: 1px solid var(--border); border-radius: 8px; margin: 12px 0; }
+#questions-modal .actions { margin: 12px 0; flex-wrap: wrap; }
+#question-form { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border); }
+#test-result .actions { margin-top: 12px; }
+#test-result details { margin: 8px 0; }
+#test-result summary { cursor: pointer; }
+#test-result pre { white-space: pre-wrap; overflow-wrap: anywhere; }
