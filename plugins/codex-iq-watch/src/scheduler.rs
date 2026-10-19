@@ -13,7 +13,7 @@ use gateway_plugin_sdk::{
 
 use crate::{App, config::ScheduleFallback, detector::AccountStatus, effective_config, log, store};
 
-/// 调度回调：候选里有降智账号时，在剩余候选中按插件固定次序挑一个 `Pick`；
+/// 调度回调：候选里有降智账号时用 `DelegateFiltered` 排除它们，其余交给宿主调度；
 /// 未启用、无需排除、读状态失败时一律 `Delegate`，保证关闭/故障时行为与内置调度一致。
 pub(crate) async fn schedule_account(
     app: &App,
@@ -47,9 +47,9 @@ pub(crate) async fn schedule_account(
     )))
 }
 
-/// 挑选决策：无排除项时交回内置调度；有排除项且仍有正常候选时按插件固定
-/// 次序（in_flight 最少、失败率最低、权重最大、ID 字典序）挑一个；全部被排除时
-/// 按配置回落（delegate 仍可用降智账号）或拒绝请求。
+/// 排除决策：无降智账号时交回内置调度；仍有正常候选时只排除降智账号
+/// （`DelegateFiltered`），选号与等待由宿主原生调度完成，忙碌的正常账号会被等待而不是报错；
+/// 全部被排除时按配置回落（delegate 仍可用降智账号）或拒绝请求。
 fn decide(
     candidates: &[AccountScheduleCandidate],
     degraded: &BTreeSet<String>,
@@ -58,25 +58,21 @@ fn decide(
     if degraded.is_empty() {
         return AccountScheduleDecision::Delegate;
     }
-    let selected = candidates
+    if candidates
         .iter()
-        .filter(|candidate| !degraded.contains(&candidate.account_id))
-        .min_by_key(|candidate| {
-            (
-                candidate.in_flight,
-                candidate.failure_rate_basis_points.unwrap_or_default(),
-                std::cmp::Reverse(candidate.weight),
-                candidate.account_id.as_str(),
-            )
-        });
-    match selected {
-        Some(candidate) => AccountScheduleDecision::Pick {
-            account_id: candidate.account_id.clone(),
-        },
-        None => match fallback {
+        .all(|candidate| degraded.contains(&candidate.account_id))
+    {
+        return match fallback {
             ScheduleFallback::Delegate => AccountScheduleDecision::Delegate,
             ScheduleFallback::Reject => AccountScheduleDecision::Reject,
-        },
+        };
+    }
+    AccountScheduleDecision::DelegateFiltered {
+        exclude_account_ids: candidates
+            .iter()
+            .filter(|candidate| degraded.contains(&candidate.account_id))
+            .map(|candidate| candidate.account_id.clone())
+            .collect(),
     }
 }
 
@@ -85,11 +81,12 @@ mod tests {
     use super::*;
     use gateway_plugin_sdk::call::policy::AccountScheduleCandidate;
 
-    fn candidate(account_id: &str, in_flight: u32, weight: u16) -> AccountScheduleCandidate {
+    fn candidate(account_id: &str, available: bool) -> AccountScheduleCandidate {
         AccountScheduleCandidate {
             account_id: account_id.to_owned(),
-            weight,
-            in_flight,
+            available,
+            weight: 100,
+            in_flight: 0,
             maximum_concurrency: 0,
             last_started_at_ms: None,
             quota_reset_at_ms: None,
@@ -99,33 +96,42 @@ mod tests {
         }
     }
 
+    fn filtered(ids: &[&str]) -> AccountScheduleDecision {
+        AccountScheduleDecision::DelegateFiltered {
+            exclude_account_ids: ids.iter().map(|id| (*id).to_owned()).collect(),
+        }
+    }
+
     #[test]
     fn no_degraded_delegates() {
-        let candidates = vec![candidate("a", 0, 100), candidate("b", 0, 100)];
+        let candidates = vec![candidate("a", true), candidate("b", true)];
         let decision = decide(&candidates, &BTreeSet::new(), ScheduleFallback::Delegate);
         assert_eq!(decision, AccountScheduleDecision::Delegate);
     }
 
     #[test]
-    fn degraded_filtered_picks_least_busy_clean_account() {
+    fn degraded_are_excluded_and_rest_left_to_host() {
         let candidates = vec![
-            candidate("busy", 3, 100),
-            candidate("degraded", 0, 100),
-            candidate("idle", 1, 100),
+            candidate("busy", false),
+            candidate("degraded", true),
+            candidate("idle", true),
         ];
         let degraded = BTreeSet::from(["degraded".to_owned()]);
         let decision = decide(&candidates, &degraded, ScheduleFallback::Delegate);
-        assert_eq!(
-            decision,
-            AccountScheduleDecision::Pick {
-                account_id: "idle".to_owned()
-            }
-        );
+        assert_eq!(decision, filtered(&["degraded"]));
+    }
+
+    #[test]
+    fn waiting_only_clean_account_is_kept_for_host_to_wait_on() {
+        let candidates = vec![candidate("waiting", false), candidate("degraded", true)];
+        let degraded = BTreeSet::from(["degraded".to_owned()]);
+        let decision = decide(&candidates, &degraded, ScheduleFallback::Reject);
+        assert_eq!(decision, filtered(&["degraded"]));
     }
 
     #[test]
     fn all_degraded_follows_fallback() {
-        let candidates = vec![candidate("a", 0, 100), candidate("b", 0, 100)];
+        let candidates = vec![candidate("a", true), candidate("b", false)];
         let degraded = BTreeSet::from(["a".to_owned(), "b".to_owned()]);
         assert_eq!(
             decide(&candidates, &degraded, ScheduleFallback::Delegate),
@@ -134,23 +140,6 @@ mod tests {
         assert_eq!(
             decide(&candidates, &degraded, ScheduleFallback::Reject),
             AccountScheduleDecision::Reject
-        );
-    }
-
-    #[test]
-    fn pick_order_prefers_failure_rate_then_weight() {
-        let candidates = vec![
-            candidate("worse", 0, 50),
-            candidate("better", 0, 100),
-            candidate("degraded", 0, 100),
-        ];
-        let degraded = BTreeSet::from(["degraded".to_owned()]);
-        let decision = decide(&candidates, &degraded, ScheduleFallback::Delegate);
-        assert_eq!(
-            decision,
-            AccountScheduleDecision::Pick {
-                account_id: "better".to_owned()
-            }
         );
     }
 }

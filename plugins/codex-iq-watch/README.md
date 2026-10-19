@@ -25,7 +25,7 @@
 
 ## 调度避让（可选）
 
-插件声明了 `scheduler` 能力：开启后宿主每次为请求选账号时先回调插件，候选中被判定为「降智」的账号会被排除，在剩余账号中按插件固定次序（in_flight 最少、失败率最低、权重最大、账号 ID 字典序）挑一个；该次序独立于宿主智能调度设置。
+插件声明了 `scheduler` 能力：开启后宿主每次为请求选账号时先回调插件，候选中被判定为「降智」的账号会被排除，其余账号的选择与等待仍由宿主原生调度完成（遵循宿主智能调度设置），忙碌的正常账号会被等待而不是被插件指定。
 
 启用两步：
 
@@ -38,7 +38,7 @@
 
 ## 升级与判定迁移
 
-需要宿主 `>=3.19.0, <4.0.0`。安装包上传后，在实例中切换到新版本才会生效；仅上传制品不切换实例。核对 `observer` 的 `request_completed` 绑定及其请求范围，旧的 `request_lifecycle`／`usage` 绑定不能直接用于当前合同。判定语义升级后，插件在下次观察时自动作废旧版累计的信号与连续判定（`logic_version`），事件与告警历史保留；未被排除的账号重新按新语义判定，开启调度排除的账号收不到观察，需点「恢复调度」解除隔离（该操作同样执行迁移，不会沿用旧信号）。
+需要宿主 `>=3.29.1, <4.0.0`。安装包上传后，在实例中切换到新版本才会生效；仅上传制品不切换实例。核对 `observer` 的 `request_completed` 绑定及其请求范围，旧的 `request_lifecycle`／`usage` 绑定不能直接用于当前合同。判定语义升级后，插件在下次观察时自动作废旧版累计的信号与连续判定（`logic_version`），事件与告警历史保留；未被排除的账号重新按新语义判定，开启调度排除的账号收不到观察，需点「恢复调度」解除隔离（该操作同样执行迁移，不会沿用旧信号）。
 
 ## 能力声明
 
@@ -84,6 +84,6 @@ cargo test --manifest-path Cargo.toml --locked
 cargo build --manifest-path Cargo.toml --release --locked --target x86_64-unknown-linux-gnu
 ```
 
-SDK 未独立发布，`Cargo.toml` 固定引用宿主发行标签 [`v3.19.0`](https://github.com/zyycn/codex-proxy-rs/releases/tag/v3.19.0)；锁文件随仓库管理，构建需要 Rust ≥ 1.97（见 `rust-toolchain.toml`）。
+SDK 未独立发布，`Cargo.toml` 固定引用宿主发行标签 [`v3.29.1`](https://github.com/zyycn/codex-proxy-rs/releases/tag/v3.29.1)；锁文件随仓库管理，构建需要 Rust ≥ 1.97（见 `rust-toolchain.toml`）。
 
 打包见 `../../scripts/package`（`cpr-plugin package` 封装），或在 CI 打 `codex-iq-watch-*` tag 产出 Release 附件。

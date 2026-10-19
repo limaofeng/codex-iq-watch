@@ -3,19 +3,19 @@
   "name": "codex-iq-watch",
   "displayName": "Codex 降智监控",
   "publisher": "xunzhimeng",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "按账号监控降智信号并告警，提供可维护题库、规则判分与 SVG 人工测试",
   "license": "MIT",
   "author": "xunzhimeng",
   "engines": {
-    "codex-proxy-rs": ">=3.19.0, <4.0.0"
+    "codex-proxy-rs": ">=3.29.1, <4.0.0"
   },
   "main": "bin/codex-iq-watch",
   "runtime": "trustedProcess",
   "contributes": {
-    "observer": {},
-    "scheduler": {},
-    "management": {}
+    "observer": { "version": 2 },
+    "scheduler": { "version": 3 },
+    "management": { "version": 2 }
   },
   "configurationSchema": {
     "type": "object",

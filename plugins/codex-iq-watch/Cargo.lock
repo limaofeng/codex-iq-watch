@@ -3,6 +3,12 @@
 version = 4
 
 [[package]]
+name = "base64"
+version = "0.23.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
+
+[[package]]
 name = "bytes"
 version = "1.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10,7 +16,7 @@ checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 
 [[package]]
 name = "codex-iq-watch"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "fastrand",
  "gateway-plugin-sdk",
@@ -30,8 +36,9 @@ checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 [[package]]
 name = "gateway-plugin-sdk"
 version = "0.1.0"
-source = "git+https://github.com/zyycn/codex-proxy-rs.git?tag=v3.19.0#fef52b3717019513108733549508377a309f129d"
+source = "git+https://github.com/zyycn/codex-proxy-rs.git?tag=v3.29.1#743a3aba70a4f78f27fb53d80a6e719599d2fe5e"
 dependencies = [
+ "base64",
  "semver",
  "serde",
  "serde_json",
