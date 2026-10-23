@@ -163,11 +163,11 @@ async fn send(
     body: &Value,
 ) -> Result<(u16, Vec<u8>), PluginFault> {
     let mut headers = vec![
-        ("content-type".to_owned(), "application/json".to_owned()),
-        ("accept".to_owned(), "*/*".to_owned()),
+        ("content-type".to_owned(), b"application/json".to_vec()),
+        ("accept".to_owned(), b"*/*".to_vec()),
     ];
     if let Some((name, value)) = WatchConfig::auth_header(auth_header) {
-        headers.push((name, value));
+        headers.push((name, value.into_bytes()));
     }
     let request = HttpRequest {
         method: "POST".to_owned(),

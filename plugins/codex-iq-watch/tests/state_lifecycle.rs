@@ -234,7 +234,7 @@ impl Host {
                 self.http_calls += 1;
                 self.reply(
                     id,
-                    json!({"status": 200, "headers": [], "stream": null}),
+                    json!({"status": 200, "http_version": "HTTP/1.1", "headers": [], "stream": null, "trailers": []}),
                     b"{}".to_vec(),
                 );
             }

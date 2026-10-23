@@ -70,7 +70,7 @@ jobs:
           [[ "$RELEASE_TAG" == "codex-iq-watch-$version" ]]
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.97.0"
+          toolchain: "1.99.1"
           components: rustfmt, clippy
           targets: x86_64-unknown-linux-gnu
       - uses: Swatinem/rust-cache@v2
@@ -102,14 +102,14 @@ jobs:
           ref: ${{ needs.resolve.outputs.ref }}
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.97.0"
+          toolchain: "1.99.1"
       - uses: actions/download-artifact@v4
         with:
           name: codex-iq-watch-binary
           path: ${{ env.PLUGIN_DIR }}/target/${{ env.TARGET }}/release
       - name: build plugin CLI
         run: |
-          git clone --depth 1 --branch v3.29.1 https://github.com/zyycn/codex-proxy-rs.git /tmp/codex-proxy-rs
+          git clone --depth 1 --branch v3.29.7 https://github.com/zyycn/codex-proxy-rs.git /tmp/codex-proxy-rs
           cd /tmp/codex-proxy-rs
           cargo build --manifest-path backend/Cargo.toml --release --locked -p codex-proxy-plugin-cli
       - name: package
