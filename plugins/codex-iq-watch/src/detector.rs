@@ -568,7 +568,6 @@ mod tests {
             client_key_id: None,
             account_id: Some("acct".to_owned()),
             upstream_model: None,
-            response_model: None,
             service_tier: None,
             requested_model: None,
             provider: Some("openai".to_owned()),

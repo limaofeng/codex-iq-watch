@@ -109,7 +109,7 @@ jobs:
           path: ${{ env.PLUGIN_DIR }}/target/${{ env.TARGET }}/release
       - name: build plugin CLI
         run: |
-          git clone --depth 1 --branch v3.29.7 https://github.com/zyycn/codex-proxy-rs.git /tmp/codex-proxy-rs
+          git clone --depth 1 --branch v3.32.0 https://github.com/zyycn/codex-proxy-rs.git /tmp/codex-proxy-rs
           cd /tmp/codex-proxy-rs
           cargo build --manifest-path backend/Cargo.toml --release --locked -p codex-proxy-plugin-cli
       - name: package

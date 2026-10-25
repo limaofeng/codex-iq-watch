@@ -91,7 +91,11 @@ impl Host {
                 contributes: manifest.contributes,
             },
         }));
-        assert!(matches!(host.recv().message, Message::Ready { .. }));
+        // 观察阶段默认预算仅 2 秒，告警需在同一次调用内发完通知，必须显式声明更长预算。
+        let Message::Ready { call_budgets, .. } = host.recv().message else {
+            panic!("expected ready")
+        };
+        assert_eq!(call_budgets.get(&Stage::Observation), Some(&30_000));
         host
     }
     fn send(&mut self, frame: Frame) {

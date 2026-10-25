@@ -15,7 +15,7 @@ use std::sync::{
 };
 
 use gateway_plugin_sdk::{
-    ErrorCode, PluginFault,
+    CallBudgets, ErrorCode, PluginFault, Stage,
     call::{
         management::{ManagementPage, ManagementRegistration, ManagementResource, ManagementRoute},
         observation::{Event, RequestCompleted},
@@ -33,6 +33,9 @@ use crate::{
     },
     notify::{Notice, deliver_all},
 };
+
+/// 观察阶段的处理预算（毫秒），需覆盖一次告警内所有通知渠道的发送。
+const OBSERVATION_BUDGET_MS: u64 = 30_000;
 
 struct App {
     /// 宿主握手配置；页面保存的通知设置在 `effective_config` 中按需叠加。
@@ -53,7 +56,7 @@ async fn effective_config(app: &App, host: &HostClient) -> WatchConfig {
 
 #[tokio::main]
 async fn main() {
-    let session = match gateway_plugin_sdk::client::PluginSession::accept(
+    let mut session = match gateway_plugin_sdk::client::PluginSession::accept(
         tokio::io::stdin(),
         tokio::io::stdout(),
         SessionConfig::default(),
@@ -63,6 +66,18 @@ async fn main() {
         Ok(session) => session,
         Err(_) => return,
     };
+    // 观察阶段默认预算只有 2 秒，而告警在同一次调用内经宿主网络发送 Webhook／邮件，
+    // 外部接口走出站代理时 2 秒不足以确认送达，会被记为「未确认」；显式放宽到 30 秒。
+    // 其余阶段沿用协议默认值：调度只读本地状态，管理页的模型测试默认 120 秒。
+    if session
+        .set_call_budgets(CallBudgets::from([(
+            Stage::Observation,
+            OBSERVATION_BUDGET_MS,
+        )]))
+        .is_err()
+    {
+        return;
+    }
     let config: WatchConfig =
         serde_json::from_value::<WatchConfig>(session.handshake().configuration.clone())
             .unwrap_or_default()
